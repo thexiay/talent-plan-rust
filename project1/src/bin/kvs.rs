@@ -1,4 +1,3 @@
-
 use std::process::exit;
 
 use clap::{Parser, Subcommand};
@@ -15,7 +14,7 @@ struct Opts {
 #[derive(Subcommand)]
 enum Commands {
     Get { name: String },
-    Set { key: String, value: String }, 
+    Set { key: String, value: String },
     Rm { key: String },
 }
 
@@ -24,7 +23,7 @@ fn main() {
     let opts = Opts::parse();
     let mut kv_store = KvStore::new();
     match opts.command {
-        Commands::Get{name} => {
+        Commands::Get { name } => {
             eprint!("unimplemented");
             exit(1);
         }

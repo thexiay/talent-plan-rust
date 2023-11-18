@@ -1,15 +1,13 @@
 use std::collections::BTreeMap;
 
-
-
 pub struct KvStore {
-    map: BTreeMap<String, String>
+    map: BTreeMap<String, String>,
 }
 
 impl KvStore {
     pub fn new() -> Self {
-        KvStore { 
-            map: BTreeMap::new()
+        KvStore {
+            map: BTreeMap::new(),
         }
     }
 
@@ -27,6 +25,4 @@ impl KvStore {
 }
 
 #[cfg(test)]
-mod tests {
-
-}
+mod tests {}
