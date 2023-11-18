@@ -21,17 +21,17 @@ enum Commands {
 fn main() {
     // 构建app，能对kvs传入命令行解析
     let opts = Opts::parse();
-    let mut kv_store = KvStore::new();
+    let _kv_store = KvStore::new();
     match opts.command {
-        Commands::Get { name } => {
+        Commands::Get { name: _ } => {
             eprint!("unimplemented");
             exit(1);
         }
-        Commands::Set { key, value } => {
+        Commands::Set { key: _, value: _ } => {
             eprint!("unimplemented");
             exit(1);
         }
-        Commands::Rm { key } => {
+        Commands::Rm { key: _ } => {
             eprint!("unimplemented");
             exit(1);
         }
