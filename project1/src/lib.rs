@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+#[derive(Default)]
 pub struct KvStore {
     map: BTreeMap<String, String>,
 }
@@ -7,7 +8,7 @@ pub struct KvStore {
 impl KvStore {
     pub fn new() -> Self {
         KvStore {
-            map: BTreeMap::new(),
+            map: BTreeMap::default(),
         }
     }
 
