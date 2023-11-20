@@ -1,4 +1,5 @@
 .vscode
+.devcontainer
 project1/target
 project2/target
 project3/target
