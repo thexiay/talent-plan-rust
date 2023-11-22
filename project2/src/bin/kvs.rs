@@ -1,7 +1,11 @@
+#![feature(let_chains)]
+
 use std::path::Path;
 use std::process::exit;
 
 use clap::{Parser, Subcommand};
+use kvs::ErrorCode;
+use kvs::KvError;
 use kvs::KvStore;
 use kvs::Result;
 
@@ -21,7 +25,7 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    // 构建app，能对kvs传入命令行解析
+
     let opts = Opts::parse();
     let mut kv_store = KvStore::open(&std::env::current_dir()?)?;
     match opts.command {
@@ -37,7 +41,11 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Rm { key} => {
-            kv_store.remove(key)
+            let res = kv_store.remove(key);
+            if let Err(error) = &res && let ErrorCode::RmError(_) = **error {
+                println!("Key not found"); 
+            }
+            res
         }
     }
 }

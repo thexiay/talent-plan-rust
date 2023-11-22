@@ -2,5 +2,6 @@
     "rust-analyzer.linkedProjects": [
         "project1/Cargo.toml",
         "project2/Cargo.toml"
-    ]
+    ],
+    "commentTranslate.targetLanguage": "zh-CN"
 }

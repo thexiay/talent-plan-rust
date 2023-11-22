@@ -1,6 +1,6 @@
 #![feature(error_generic_member_access)]
 
-use std::{collections::{BTreeMap, HashSet, HashMap}, io::{Write, Seek, SeekFrom, Read, BufReader}, fs::{File, OpenOptions}, path::Path, fmt::{Display, Formatter}, os::unix::fs::FileExt, backtrace::Backtrace};
+use std::{collections::{BTreeMap, HashSet, HashMap}, io::{Write, Seek, SeekFrom, Read, BufReader}, fs::{File, OpenOptions}, path::Path, fmt::{Display, Formatter}, os::unix::fs::FileExt, backtrace::Backtrace, ops::Deref};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
@@ -12,6 +12,8 @@ pub enum ErrorCode {
     InternalError(String),
     #[error(transparent)]
     NetworkError(#[from] std::io::Error),
+    #[error("delete not exists key: {0}")]
+    RmError(String),
 }
 
 pub type Result<T> = std::result::Result<T, KvError>;
@@ -22,6 +24,14 @@ pub struct KvError {
     #[source]
     inner: Box<ErrorCode>,
     backtrace: Box<Backtrace>,
+}
+
+impl Deref for KvError {
+    type Target = ErrorCode;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.inner
+    }
 }
 
 impl From<ErrorCode> for KvError {
@@ -86,21 +96,24 @@ struct KIndex {
 #[derive(Serialize, Deserialize)]
 struct Index {
     offset: u64,
-    length: usize,
+    length: u64,
 }
 
 pub struct KvStore {
-    // index的信息
+    // memory index
     map: HashMap<String, Index>,
     // data file
     storage: File,
-    // index file
-    index: File,
 }
 
 
-/// 1.Is a buffer is needed?
-/// 2.compact it or not ?
+/// 1.How much memory do you need? a fixed memory 
+/// 2.What is the minimum amout of copying necessary to compact the log? 
+/// Only compact some key until threshold bytes are compacted. So there may be not only one file to read, maybe a lot of files to read a whole new range for current database key.
+/// 3.Can the compaction be done in-place? 
+/// No, it will break the file
+/// 4.How do you maintain data-integrity if compaction fails? 
+/// First replace memory index and second clean old log in one trafic 
 impl KvStore {
     pub fn open(path: &Path) -> Result<Self> {
         std::fs::create_dir_all(path)?;
@@ -109,35 +122,34 @@ impl KvStore {
             .read(true)
             .create(true)
             .open(path.join("op.log"))?;
-        let mut index_file = OpenOptions::new()
-            .append(true)
-            .read(true)
-            .create(true)
-            .open(path.join("index.log"))?;
         let mut kv_store = KvStore {
             map: HashMap::default(),
             storage: storage_file,
-            index: index_file,
         };
-        kv_store.rebuild(path)?;
+        kv_store.load()?;
         Ok(kv_store)
     }
     
     fn load(&mut self) -> Result<()> {
-        std::io::IoSlice
-        std::io::Read
-        storage_file.seek(SeekFrom::Start(0))?;
-        let bufReader = BufReader::new(self.storage);
-        let iter = serde_json::Deserializer::from_reader(bufReader).into_iter();
+        //println!("reload begin.");
+        self.storage.seek(SeekFrom::Start(0))?;
+        let buf_reader = BufReader::new(self.storage.try_clone()?);
+        let mut iter = serde_json::Deserializer::from_reader(buf_reader).into_iter::<Command>();
+        let mut last_offset = iter.byte_offset();
         while let Some(cmd) = iter.next() {
-
+            match cmd? {
+                Command::SetCommand{ key, ..} => {
+                    // println!("reload insert for key {} for index (offset: {}, length: {}).", key, last_offset, iter.byte_offset());
+                    self.map.insert(key, Index{ offset: last_offset as u64, length: (iter.byte_offset() - last_offset) as u64 });
+                }
+                Command::RmCommand { key } => {
+                    self.map.remove(&key);
+                },
+            }
+            last_offset = iter.byte_offset();
         }
-        while bufReader.
-        self.storage.read(buf)
-        
-        
-
-    
+        //println!("reload end.");
+        Ok(())
     }
 
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
@@ -147,7 +159,8 @@ impl KvStore {
         
         let len = self.storage.metadata()?.len();
         self.storage.write(&value_buf)?;
-        self.map.insert(key, Index { offset: len , length: value_buf.len() });
+        //println!("insert for key {} for index (offset: {}, length: {}).", key, len, value_buf.len());
+        self.map.insert(key, Index { offset: len , length: value_buf.len() as u64 });
         Ok(())
     }
 
@@ -155,7 +168,7 @@ impl KvStore {
         match self.map.get(&key) {
             Some(index) => {
                 self.storage.seek(SeekFrom::Start(index.offset))?;
-                let mut buffer = vec![0; index.length];
+                let mut buffer = vec![0; index.length as usize];
                 self.storage.read_exact(&mut buffer)?;
                 
                 let cmd: serde_json::error::Result<Command> = serde_json::from_slice(buffer.as_slice());
@@ -173,10 +186,12 @@ impl KvStore {
             &Command::RmCommand{ key: key.clone() }
         )?;
         
-        let len = self.storage.metadata()?.len();
         self.storage.write(&value_buf)?;
-        self.map.insert(key, Index { offset: len, length: value_buf.len() });
-        Ok(())
+        if let None = self.map.remove(&key) {
+            Err(ErrorCode::RmError(key).into())
+        } else {
+            Ok(())
+        }
     }
 }
 
