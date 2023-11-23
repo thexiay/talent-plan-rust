@@ -335,7 +335,7 @@ impl KvStore {
             // sort it by uncompacted bytes
             let mut to_be_compacted_bytes = 0_u64;
             let mut to_be_compacted_seqs = Vec::new();
-            
+            {
                 let mut uncompacted_entrys: Vec<(&u64, &mut u64)> = self.stats.uncompacted.iter_mut().collect();
                 uncompacted_entrys.sort_by(|a, b|  b.1.cmp(&a.1) );
                 
@@ -346,57 +346,57 @@ impl KvStore {
                         break;
                     }    
                 }
-            
+            }
             
             // begin compacted 
-            
-            let begin_compact_seq = self.sequence_no + 1;
-            let mut compact_seq = self.sequence_no + 1;
-            self.scroll(to_be_compacted_seqs.len() as u64)?;  // it must before compact
-            let mut new_index: HashMap<String, Pointer> = HashMap::new();
-            let mut compact_writer = OpenOptions::new()
-                .append(true)
-                .create_new(true)
-                .open(self.path.join(self.sequence_no.to_string() + ".tmp"))?;
-            for key in self.index.keys() {
-                if let Some(pointer) = self.index.get(key) 
-                    && to_be_compacted_seqs.contains(&&pointer.seq) 
-                {
-                    let reader = self.readers
-                        .get_mut(&pointer.seq)
-                        .expect(&format!("Invalid seq {} for current readers", &pointer.seq));
-                    if reader.stream_position()? != pointer.pos {
-                        reader.seek(SeekFrom::Start(pointer.pos))?;
-                    }
-                    reader.take(pointer.len);
-                    new_index.insert((*key).clone(), Pointer {
-                        seq: compact_seq,
-                        pos: compact_writer.stream_position()?,
-                        len: pointer.len,
-                    });
-                    io::copy(reader, &mut compact_writer)?;
-                    
+            {
+                let begin_compact_seq = self.sequence_no + 1;
+                let mut compact_seq = self.sequence_no + 1;
+                self.scroll(to_be_compacted_seqs.len() as u64)?;  // it must before compact
+                let mut new_index: HashMap<String, Pointer> = HashMap::new();
+                let mut compact_writer = OpenOptions::new()
+                    .append(true)
+                    .create_new(true)
+                    .open(self.path.join(self.sequence_no.to_string() + ".tmp"))?;
+                for key in self.index.keys().into_iter() {
+                    if let Some(pointer) = self.index.get(key) 
+                        && to_be_compacted_seqs.contains(&&pointer.seq) 
+                    {
+                        let reader = self.readers
+                            .get_mut(&pointer.seq)
+                            .expect(&format!("Invalid seq {} for current readers", &pointer.seq));
+                        if reader.stream_position()? != pointer.pos {
+                            reader.seek(SeekFrom::Start(pointer.pos))?;
+                        }
+                        reader.take(pointer.len);
+                        new_index.insert(key.clone(), Pointer {
+                            seq: compact_seq,
+                            pos: compact_writer.stream_position()?,
+                            len: pointer.len,
+                        });
+                        io::copy(reader, &mut compact_writer)?;
+                        
 
-                    // once writer over threshold, scroll it
-                    if compact_writer.metadata()?.len() >= FILE_THRESHOLD {
-                        compact_seq += 1;
-                        compact_writer = OpenOptions::new()
-                            .append(true)
-                            .create_new(true)
-                            .open(self.path.join(self.sequence_no.to_string() + ".tmp"))?;
+                        // once writer over threshold, scroll it
+                        if compact_writer.metadata()?.len() >= FILE_THRESHOLD {
+                            compact_seq += 1;
+                            compact_writer = OpenOptions::new()
+                                .append(true)
+                                .create_new(true)
+                                .open(self.path.join(self.sequence_no.to_string() + ".tmp"))?;
+                        }
                     }
                 }
-                
                 let end_compact_seq = compact_seq + 1;
                 
                 // commit compacte, any error happen in commit cannot impact eventual consistency
                 self.commit_compact(
                     (begin_compact_seq..end_compact_seq), 
-                    &to_be_compacted_seqs,
+                    to_be_compacted_seqs,
                     to_be_compacted_bytes,
-                    &new_index)?;
-            
+                    new_index)?;
             }
+            
         }
         Ok(())
     }
@@ -404,11 +404,10 @@ impl KvStore {
     fn commit_compact(
         &mut self, 
         after_compact_seqs: Range<u64>, 
-        to_be_compacted_seqs: &Vec<u64>, 
+        to_be_compacted_seqs: Vec<u64>, 
         to_be_compacted_bytes: u64,
-        new_index: &HashMap<String, Pointer>,
+        new_index: HashMap<String, Pointer>,
     ) -> Result<()> {
-        /**
         for after_compact_seq in after_compact_seqs {
             std::fs::rename(
                 self.path.join(after_compact_seq.to_string() + ".tmp"),
@@ -421,7 +420,6 @@ impl KvStore {
         self.stats.total_uncompacted -= to_be_compacted_bytes;
         // update memory index
         self.index.extend(new_index);
-         */
         Ok(())
     }
 
