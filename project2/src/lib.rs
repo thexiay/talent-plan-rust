@@ -102,7 +102,7 @@ impl Command {
 pub const COMPACTABLE_THRESHOLD: u64 = 32 * 1024;  // 32KB
 pub const COMPACTED_ONCE_BYTES: u64 = 16 * 1024;  // 16KB
 pub const FILE_THRESHOLD: u64 = 32 * 1024;  // 32KB
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Pointer {
     // data file version
     seq: u64,
@@ -138,11 +138,17 @@ struct Writer {
 
 impl Write for Writer {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.write(buf)
+        self.inner.write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.flush()
+        self.inner.flush()
+    }
+}
+
+impl Seek for Writer {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(pos)
     }
 }
 
@@ -198,6 +204,7 @@ impl KvStore {
             .flatten()
             .collect();
         seq_list.sort_unstable();
+        println!("all files is {:#?}", &seq_list);
         
 
         let mut index: HashMap<String, Pointer> = HashMap::new();
@@ -205,9 +212,10 @@ impl KvStore {
         let mut readers: BTreeMap<u64, Reader> = BTreeMap::new();
 
         for seq in seq_list.iter() {
-            readers.insert(seq.clone(), Self::load(seq.clone(), &mut index, &mut stats)?);
+            println!("load from {}.log", seq);
+            readers.insert(seq.clone(), Self::load(path, seq.clone(), &mut index, &mut stats)?);
         }
-        let sequence_no = seq_list.pop().unwrap_or(1);
+        let sequence_no = seq_list.pop().map_or(1, |seq| seq + 1 );
         let writer = Writer {
             inner: OpenOptions::new()
                         .append(true)
@@ -225,12 +233,12 @@ impl KvStore {
     }
     
     /// Reload all data into memory, build memory index
-    fn load(seq: u64, index: &mut HashMap<String, Pointer>, stats: &mut Statistics) -> Result<Reader> {
-        //println!("reload begin.");
+    fn load(path: &Path, seq: u64, index: &mut HashMap<String, Pointer>, stats: &mut Statistics) -> Result<Reader> {
+        // println!("reload {} begin.", &seq);
         let mut reader = Reader {
             inner: OpenOptions::new()
                         .read(true)
-                        .open(seq.to_string() + ".log")?
+                        .open(path.join(seq.to_string() + ".log"))?
         };
         reader.seek(SeekFrom::Start(0))?;
         let mut iter = serde_json::Deserializer::from_reader(&mut reader).into_iter::<Command>();
@@ -272,6 +280,7 @@ impl KvStore {
         let set = Command::set(&key, value);
         let pos = self.writer.pos()?;
         serde_json::to_writer(&mut self.writer, &set)?;
+        self.writer.flush()?;
         let new_pos = self.writer.pos()?;
         if let Some(old_record) = self.index.insert(key, Pointer{
             seq: self.sequence_no,
@@ -295,8 +304,10 @@ impl KvStore {
                 let reader = self.readers
                     .get_mut(&index.seq)
                     .expect(&format!("Invalid seq {} for current readers", &index.seq));
+                //println!("load from {} len {}", index.pos, index.len);
                 reader.seek(SeekFrom::Start(index.pos))?;
-                match serde_json::from_reader(reader)? {
+                let cmd_reader = reader.take(index.len);
+                match serde_json::from_reader(cmd_reader)? {
                     Command::Set{value, ..} => Ok(Some(value)),
                     _ => Err(ErrorCode::InternalError(format!("invalid cmd at key {}", key)).into())
                 }
@@ -332,58 +343,71 @@ impl KvStore {
 
     fn try_trigger_compact(&mut self) -> Result<()> {
         if self.stats.total_uncompacted >= COMPACTABLE_THRESHOLD {
+            println!("trigger compact!");
             // sort it by uncompacted bytes
             let mut to_be_compacted_bytes = 0_u64;
             let mut to_be_compacted_seqs = Vec::new();
-            {
-                let mut uncompacted_entrys: Vec<(&u64, &mut u64)> = self.stats.uncompacted.iter_mut().collect();
-                uncompacted_entrys.sort_by(|a, b|  b.1.cmp(&a.1) );
-                
-                for entry in uncompacted_entrys.iter() {
-                    to_be_compacted_seqs.push(*entry.0);
-                    to_be_compacted_bytes += *entry.1;
-                    if to_be_compacted_bytes >= COMPACTED_ONCE_BYTES {
-                        break;
-                    }    
-                }
+            
+            let mut uncompacted_entrys: Vec<(&u64, &mut u64)> = self.stats.uncompacted.iter_mut().collect();
+            uncompacted_entrys.sort_by(|a, b|  b.1.cmp(&a.1) );
+            
+            for entry in uncompacted_entrys.iter() {
+                to_be_compacted_seqs.push(*entry.0);
+                to_be_compacted_bytes += *entry.1;
+                if to_be_compacted_bytes >= COMPACTED_ONCE_BYTES {
+                    break;
+                }    
             }
+            println!("compact seq is {:#?}", to_be_compacted_seqs);
+            
             
             // begin compacted 
-            {
+            
                 let begin_compact_seq = self.sequence_no + 1;
                 let mut compact_seq = self.sequence_no + 1;
-                self.scroll(to_be_compacted_seqs.len() as u64)?;  // it must before compact
+                self.scroll((to_be_compacted_seqs.len() + 1) as u64)?;  // it must before compact
                 let mut new_index: HashMap<String, Pointer> = HashMap::new();
-                let mut compact_writer = OpenOptions::new()
-                    .append(true)
-                    .create_new(true)
-                    .open(self.path.join(self.sequence_no.to_string() + ".tmp"))?;
+                let mut compact_writer = Writer {
+                    inner: OpenOptions::new()
+                            .append(true)
+                            .create_new(true)
+                            .open(self.path.join(compact_seq.to_string() + ".tmp"))?
+                };
+                println!("aaaaa");
+                println!("all to be compacted seqs is {:#?}, new seqs is {:#?}", to_be_compacted_seqs, begin_compact_seq);
+
+                // println!("all entrys is  {:#?}", self.index);
                 for key in self.index.keys().into_iter() {
                     if let Some(pointer) = self.index.get(key) 
-                        && to_be_compacted_seqs.contains(&&pointer.seq) 
+                        && to_be_compacted_seqs.contains(&pointer.seq) 
                     {
                         let reader = self.readers
                             .get_mut(&pointer.seq)
                             .expect(&format!("Invalid seq {} for current readers", &pointer.seq));
-                        if reader.stream_position()? != pointer.pos {
+                        if reader.pos()? != pointer.pos {
                             reader.seek(SeekFrom::Start(pointer.pos))?;
                         }
                         reader.take(pointer.len);
+                        let pos = compact_writer.pos()?;
                         new_index.insert(key.clone(), Pointer {
                             seq: compact_seq,
-                            pos: compact_writer.stream_position()?,
+                            pos: pos,
                             len: pointer.len,
                         });
                         io::copy(reader, &mut compact_writer)?;
+                        println!("compact new record {} to {}", pos, pos+pointer.len);
+                        compact_writer.seek(SeekFrom::Start(pos + pointer.len))?;
                         
 
                         // once writer over threshold, scroll it
-                        if compact_writer.metadata()?.len() >= FILE_THRESHOLD {
+                        if compact_writer.pos()? >= FILE_THRESHOLD {
                             compact_seq += 1;
-                            compact_writer = OpenOptions::new()
-                                .append(true)
-                                .create_new(true)
-                                .open(self.path.join(self.sequence_no.to_string() + ".tmp"))?;
+                            compact_writer = Writer {
+                                inner: OpenOptions::new()
+                                        .append(true)
+                                        .create_new(true)
+                                        .open(self.path.join(compact_seq.to_string() + ".tmp"))?
+                            }
                         }
                     }
                 }
@@ -395,7 +419,7 @@ impl KvStore {
                     to_be_compacted_seqs,
                     to_be_compacted_bytes,
                     new_index)?;
-            }
+            
             
         }
         Ok(())
@@ -408,10 +432,15 @@ impl KvStore {
         to_be_compacted_bytes: u64,
         new_index: HashMap<String, Pointer>,
     ) -> Result<()> {
+        // rename file
         for after_compact_seq in after_compact_seqs {
             std::fs::rename(
                 self.path.join(after_compact_seq.to_string() + ".tmp"),
                  self.path.join(after_compact_seq.to_string() + ".log"))?;
+        }
+        // delete file
+        for seq in to_be_compacted_seqs.iter() {
+            std::fs::remove_file(self.path.join(seq.to_string() + ".log"))?;
         }
         // remove stats
         for compacted_seq in to_be_compacted_seqs.iter() {
