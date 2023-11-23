@@ -1,8 +1,9 @@
 #![feature(error_generic_member_access)]
+#![feature(let_chains)]
 
-use std::{collections::{BTreeMap, HashSet, HashMap}, io::{Write, Seek, SeekFrom, Read, BufReader}, fs::{File, OpenOptions}, path::Path, fmt::{Display, Formatter}, os::unix::fs::FileExt, backtrace::Backtrace, ops::Deref};
+use std::{collections::{BTreeMap, HashSet, HashMap}, io::{Write, Seek, SeekFrom, Read, BufReader, self, BufRead}, fs::{File, OpenOptions, self}, path::{Path, PathBuf}, fmt::{Display, Formatter}, os::unix::fs::FileExt, backtrace::Backtrace, ops::{Deref, Range}, ffi::OsStr};
 
-use serde::{Deserialize, Serialize};
+use serde_derive::{Deserialize, Serialize};
 use serde_json::Deserializer;
 use thiserror::Error;
 
@@ -83,27 +84,95 @@ impl From<std::io::Error> for KvError {
 /// serde command
 #[derive(Serialize, Deserialize)]
 pub enum Command {
-    SetCommand{ key: String, value: String},
-    RmCommand{ key: String },
+    Set{ key: String, value: String},
+    Rm{ key: String },
 }
 
-#[derive(Serialize, Deserialize)]
-struct KIndex {
-    key: String,
-    index: Index,    
+impl Command {
+    fn set(key: &String, value: String) -> Command {
+        Command::Set{ key: key.clone(), value }
+    }
+    
+    fn rm(key: &String) -> Command {
+        Command::Rm { key: key.clone() }
+    }
 }
 
+/// once uncompacted data increse to this threshold, trigger compact
+pub const COMPACTABLE_THRESHOLD: u64 = 32 * 1024;  // 32KB
+pub const COMPACTED_ONCE_BYTES: u64 = 16 * 1024;  // 16KB
+pub const FILE_THRESHOLD: u64 = 32 * 1024;  // 32KB
 #[derive(Serialize, Deserialize)]
-struct Index {
-    offset: u64,
-    length: u64,
+struct Pointer {
+    // data file version
+    seq: u64,
+    pos: u64,
+    len: u64,
+}
+
+struct Reader {
+    inner: File
+}
+
+impl Seek for Reader {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+impl Read for Reader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl Reader {
+    fn pos(&mut self) -> io::Result<u64> {
+        self.inner.stream_position()
+    }
+}
+
+struct Writer {
+    inner: File
+}
+
+impl Write for Writer {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.flush()
+    }
+}
+
+impl Writer {
+    fn pos(&mut self) -> io::Result<u64> {
+        self.inner.stream_position()
+    }
+}
+
+#[derive(Default)]
+struct Statistics {
+    // every uncompacted bytes in each file
+    uncompacted: HashMap<u64, u64>,
+    // total uncompacted bytes
+    total_uncompacted: u64,
 }
 
 pub struct KvStore {
+    // current version
+    sequence_no: u64,
+    // current path
+    path: PathBuf,
+    // all readers
+    readers: BTreeMap<u64, Reader>,
+    // only one writer, once compact 
+    writer: Writer,
     // memory index
-    map: HashMap<String, Index>,
-    // data file
-    storage: File,
+    index: HashMap<String, Pointer>,
+    // uncompacted data
+    stats: Statistics,
 }
 
 
@@ -117,63 +186,118 @@ pub struct KvStore {
 impl KvStore {
     pub fn open(path: &Path) -> Result<Self> {
         std::fs::create_dir_all(path)?;
-        let storage_file = OpenOptions::new()
-            .append(true)
-            .read(true)
-            .create(true)
-            .open(path.join("op.log"))?;
-        let mut kv_store = KvStore {
-            map: HashMap::default(),
-            storage: storage_file,
+        let mut seq_list: Vec<u64> = fs::read_dir(&path)?
+            .flat_map(|res| -> Result<_> { Ok(res?.path()) })
+            .filter(|path| path.is_file() && path.extension() == Some("log".as_ref()))
+            .flat_map(|path| {
+                path.file_name()
+                    .and_then(OsStr::to_str)
+                    .map(|s| s.trim_end_matches(".log"))
+                    .map(str::parse::<u64>)
+            })
+            .flatten()
+            .collect();
+        seq_list.sort_unstable();
+        
+
+        let mut index: HashMap<String, Pointer> = HashMap::new();
+        let mut stats = Statistics::default();
+        let mut readers: BTreeMap<u64, Reader> = BTreeMap::new();
+
+        for seq in seq_list.iter() {
+            readers.insert(seq.clone(), Self::load(seq.clone(), &mut index, &mut stats)?);
+        }
+        let sequence_no = seq_list.pop().unwrap_or(1);
+        let writer = Writer {
+            inner: OpenOptions::new()
+                        .append(true)
+                        .create_new(true)
+                        .open(path.join(sequence_no.to_string() + ".log"))?
         };
-        kv_store.load()?;
-        Ok(kv_store)
+        Ok(KvStore{
+            sequence_no,
+            path: path.into(),
+            readers,
+            writer,
+            index,
+            stats,
+        })
     }
     
-    fn load(&mut self) -> Result<()> {
+    /// Reload all data into memory, build memory index
+    fn load(seq: u64, index: &mut HashMap<String, Pointer>, stats: &mut Statistics) -> Result<Reader> {
         //println!("reload begin.");
-        self.storage.seek(SeekFrom::Start(0))?;
-        let buf_reader = BufReader::new(self.storage.try_clone()?);
-        let mut iter = serde_json::Deserializer::from_reader(buf_reader).into_iter::<Command>();
+        let mut reader = Reader {
+            inner: OpenOptions::new()
+                        .read(true)
+                        .open(seq.to_string() + ".log")?
+        };
+        reader.seek(SeekFrom::Start(0))?;
+        let mut iter = serde_json::Deserializer::from_reader(&mut reader).into_iter::<Command>();
         let mut last_offset = iter.byte_offset();
         while let Some(cmd) = iter.next() {
             match cmd? {
-                Command::SetCommand{ key, ..} => {
-                    // println!("reload insert for key {} for index (offset: {}, length: {}).", key, last_offset, iter.byte_offset());
-                    self.map.insert(key, Index{ offset: last_offset as u64, length: (iter.byte_offset() - last_offset) as u64 });
+                Command::Set{ key, ..} => {
+                    if let Some(old_record) = index.insert(key, Pointer {
+                        seq,
+                        pos: last_offset as u64, 
+                        len: (iter.byte_offset() - last_offset) as u64,
+                    }) {
+                        stats.total_uncompacted += old_record.len;
+                        stats.uncompacted.entry(seq)
+                            .and_modify(|x| *x += old_record.len)
+                            .or_insert(old_record.len);
+                    }
                 }
-                Command::RmCommand { key } => {
-                    self.map.remove(&key);
+                Command::Rm { key } => {
+                    if let Some(old_record) = index.remove(&key) {
+                        stats.uncompacted
+                                .entry(seq)
+                                .and_modify(|x| *x += old_record.len)
+                                .or_insert(old_record.len);    
+                        stats.total_uncompacted += old_record.len;
+                    }
+                    stats.uncompacted.entry(seq)
+                        .and_modify(|x| *x += (iter.byte_offset() - last_offset) as u64)
+                        .or_insert((iter.byte_offset() - last_offset) as u64);
+                    stats.total_uncompacted += (iter.byte_offset() - last_offset) as u64;
                 },
             }
             last_offset = iter.byte_offset();
         }
-        //println!("reload end.");
-        Ok(())
+        Ok(reader)
     }
 
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        let value_buf = serde_json::to_vec(
-            &Command::SetCommand { key: key.clone(), value}
-        )?;
+        let set = Command::set(&key, value);
+        let pos = self.writer.pos()?;
+        serde_json::to_writer(&mut self.writer, &set)?;
+        let new_pos = self.writer.pos()?;
+        if let Some(old_record) = self.index.insert(key, Pointer{
+            seq: self.sequence_no,
+            pos,
+            len: new_pos - pos,
+        }) {
+            self.stats.uncompacted.entry(old_record.seq)
+                .and_modify(|v| *v += old_record.len)
+                .or_insert(old_record.len);
+            self.stats.total_uncompacted += old_record.len;
+        }
         
-        let len = self.storage.metadata()?.len();
-        self.storage.write(&value_buf)?;
-        //println!("insert for key {} for index (offset: {}, length: {}).", key, len, value_buf.len());
-        self.map.insert(key, Index { offset: len , length: value_buf.len() as u64 });
+        self.try_trigger_compact()?;
+        self.try_trigger_scroll()?;
         Ok(())
     }
 
     pub fn get(&mut self, key: String) -> Result<Option<String>> {
-        match self.map.get(&key) {
+        match self.index.get(&key) {
             Some(index) => {
-                self.storage.seek(SeekFrom::Start(index.offset))?;
-                let mut buffer = vec![0; index.length as usize];
-                self.storage.read_exact(&mut buffer)?;
-                
-                let cmd: serde_json::error::Result<Command> = serde_json::from_slice(buffer.as_slice());
-                match cmd? {
-                    Command::SetCommand{ value, .. } => Ok(Some(value)),
+                let reader = self.readers
+                    .get_mut(&index.seq)
+                    .expect(&format!("Invalid seq {} for current readers", &index.seq));
+                reader.seek(SeekFrom::Start(index.pos))?;
+                match serde_json::from_reader(reader)? {
+                    Command::Set{value, ..} => Ok(Some(value)),
                     _ => Err(ErrorCode::InternalError(format!("invalid cmd at key {}", key)).into())
                 }
             }
@@ -182,28 +306,147 @@ impl KvStore {
     }
 
     pub fn remove(&mut self, key: String) -> Result<()> {
-        let value_buf = serde_json::to_vec(
-            &Command::RmCommand{ key: key.clone() }
-        )?;
-        
-        self.storage.write(&value_buf)?;
-        if let None = self.map.remove(&key) {
-            Err(ErrorCode::RmError(key).into())
-        } else {
-            Ok(())
+        let rm = Command::rm(&key);
+        let pos = self.writer.pos()?;
+        serde_json::to_writer(&mut self.writer, &rm)?;
+        let new_pos = self.writer.pos()?;
+        match self.index.remove(&key) {
+            Some(old_record) => {
+                self.stats.uncompacted
+                    .entry(self.sequence_no)
+                    .and_modify(|x| *x += (new_pos - pos))
+                    .or_insert(new_pos - pos);
+                self.stats.uncompacted
+                    .entry(old_record.seq)
+                    .and_modify(|f| *f += old_record.len)
+                    .or_insert(old_record.len);
+                self.stats.total_uncompacted += (old_record.len + new_pos - pos)
+            } 
+            None => return Err(ErrorCode::RmError(key).into())
         }
+        
+        self.try_trigger_compact()?;
+        self.try_trigger_scroll()?;
+        Ok(())
+    }
+
+    fn try_trigger_compact(&mut self) -> Result<()> {
+        if self.stats.total_uncompacted >= COMPACTABLE_THRESHOLD {
+            // sort it by uncompacted bytes
+            let mut to_be_compacted_bytes = 0_u64;
+            let mut to_be_compacted_seqs = Vec::new();
+            
+                let mut uncompacted_entrys: Vec<(&u64, &mut u64)> = self.stats.uncompacted.iter_mut().collect();
+                uncompacted_entrys.sort_by(|a, b|  b.1.cmp(&a.1) );
+                
+                for entry in uncompacted_entrys.iter() {
+                    to_be_compacted_seqs.push(*entry.0);
+                    to_be_compacted_bytes += *entry.1;
+                    if to_be_compacted_bytes >= COMPACTED_ONCE_BYTES {
+                        break;
+                    }    
+                }
+            
+            
+            // begin compacted 
+            
+            let begin_compact_seq = self.sequence_no + 1;
+            let mut compact_seq = self.sequence_no + 1;
+            self.scroll(to_be_compacted_seqs.len() as u64)?;  // it must before compact
+            let mut new_index: HashMap<String, Pointer> = HashMap::new();
+            let mut compact_writer = OpenOptions::new()
+                .append(true)
+                .create_new(true)
+                .open(self.path.join(self.sequence_no.to_string() + ".tmp"))?;
+            for key in self.index.keys() {
+                if let Some(pointer) = self.index.get(key) 
+                    && to_be_compacted_seqs.contains(&&pointer.seq) 
+                {
+                    let reader = self.readers
+                        .get_mut(&pointer.seq)
+                        .expect(&format!("Invalid seq {} for current readers", &pointer.seq));
+                    if reader.stream_position()? != pointer.pos {
+                        reader.seek(SeekFrom::Start(pointer.pos))?;
+                    }
+                    reader.take(pointer.len);
+                    new_index.insert((*key).clone(), Pointer {
+                        seq: compact_seq,
+                        pos: compact_writer.stream_position()?,
+                        len: pointer.len,
+                    });
+                    io::copy(reader, &mut compact_writer)?;
+                    
+
+                    // once writer over threshold, scroll it
+                    if compact_writer.metadata()?.len() >= FILE_THRESHOLD {
+                        compact_seq += 1;
+                        compact_writer = OpenOptions::new()
+                            .append(true)
+                            .create_new(true)
+                            .open(self.path.join(self.sequence_no.to_string() + ".tmp"))?;
+                    }
+                }
+                
+                let end_compact_seq = compact_seq + 1;
+                
+                // commit compacte, any error happen in commit cannot impact eventual consistency
+                self.commit_compact(
+                    (begin_compact_seq..end_compact_seq), 
+                    &to_be_compacted_seqs,
+                    to_be_compacted_bytes,
+                    &new_index)?;
+            
+            }
+        }
+        Ok(())
+    }
+
+    fn commit_compact(
+        &mut self, 
+        after_compact_seqs: Range<u64>, 
+        to_be_compacted_seqs: &Vec<u64>, 
+        to_be_compacted_bytes: u64,
+        new_index: &HashMap<String, Pointer>,
+    ) -> Result<()> {
+        /**
+        for after_compact_seq in after_compact_seqs {
+            std::fs::rename(
+                self.path.join(after_compact_seq.to_string() + ".tmp"),
+                 self.path.join(after_compact_seq.to_string() + ".log"))?;
+        }
+        // remove stats
+        for compacted_seq in to_be_compacted_seqs.iter() {
+            self.stats.uncompacted.remove(compacted_seq).expect("remove invalid seq");
+        }
+        self.stats.total_uncompacted -= to_be_compacted_bytes;
+        // update memory index
+        self.index.extend(new_index);
+         */
+        Ok(())
+    }
+
+    fn try_trigger_scroll(&mut self) -> Result<()> {
+        if self.writer.pos()? >= FILE_THRESHOLD {
+            self.scroll(1)?;    
+        }
+        Ok(())
+    }
+    
+    fn scroll(&mut self, scroll_step: u64) -> Result<()> {
+        let reader = Reader {
+            inner: OpenOptions::new()
+                        .read(true)
+                        .open(self.path.join(self.sequence_no.to_string() + ".log"))?
+        };
+        self.readers.insert(self.sequence_no, reader);
+
+        self.sequence_no += scroll_step;
+        self.writer = Writer {
+            inner: OpenOptions::new()
+                        .append(true)
+                        .create_new(true)
+                        .open(self.path.join(self.sequence_no.to_string() + ".log"))?
+        };
+        Ok(())
     }
 }
-
-impl Write for KvStore {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        todo!()
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        todo!()
-    }
-}
-
-#[cfg(test)]
-mod tests {}
