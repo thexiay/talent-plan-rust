@@ -204,24 +204,30 @@ impl KvStore {
             .flatten()
             .collect();
         seq_list.sort_unstable();
-        println!("all files is {:#?}", &seq_list);
+        //println!("all files is {:#?}", &seq_list);
         
 
         let mut index: HashMap<String, Pointer> = HashMap::new();
         let mut stats = Statistics::default();
         let mut readers: BTreeMap<u64, Reader> = BTreeMap::new();
 
+        //println!("load from {:#?}", seq_list);
         for seq in seq_list.iter() {
-            println!("load from {}.log", seq);
             readers.insert(seq.clone(), Self::load(path, seq.clone(), &mut index, &mut stats)?);
         }
         let sequence_no = seq_list.pop().map_or(1, |seq| seq + 1 );
+        //println!("open writer {}", sequence_no);
         let writer = Writer {
             inner: OpenOptions::new()
                         .append(true)
                         .create_new(true)
                         .open(path.join(sequence_no.to_string() + ".log"))?
         };
+        readers.insert(sequence_no, Reader {
+            inner: OpenOptions::new()
+                        .read(true)
+                        .open(path.join(sequence_no.to_string() + ".log"))?
+        });
         Ok(KvStore{
             sequence_no,
             path: path.into(),
@@ -234,7 +240,6 @@ impl KvStore {
     
     /// Reload all data into memory, build memory index
     fn load(path: &Path, seq: u64, index: &mut HashMap<String, Pointer>, stats: &mut Statistics) -> Result<Reader> {
-        // println!("reload {} begin.", &seq);
         let mut reader = Reader {
             inner: OpenOptions::new()
                         .read(true)
@@ -343,7 +348,6 @@ impl KvStore {
 
     fn try_trigger_compact(&mut self) -> Result<()> {
         if self.stats.total_uncompacted >= COMPACTABLE_THRESHOLD {
-            println!("trigger compact!");
             // sort it by uncompacted bytes
             let mut to_be_compacted_bytes = 0_u64;
             let mut to_be_compacted_seqs = Vec::new();
@@ -358,7 +362,7 @@ impl KvStore {
                     break;
                 }    
             }
-            println!("compact seq is {:#?}", to_be_compacted_seqs);
+            //println!("compact seq is {:#?}", to_be_compacted_seqs);
             
             
             // begin compacted 
@@ -373,8 +377,8 @@ impl KvStore {
                             .create_new(true)
                             .open(self.path.join(compact_seq.to_string() + ".tmp"))?
                 };
-                println!("aaaaa");
-                println!("all to be compacted seqs is {:#?}, new seqs is {:#?}", to_be_compacted_seqs, begin_compact_seq);
+                //println!("aaaaa");
+                //println!("all to be compacted seqs is {:#?}, new seqs is {:#?}", to_be_compacted_seqs, begin_compact_seq);
 
                 // println!("all entrys is  {:#?}", self.index);
                 for key in self.index.keys().into_iter() {
@@ -395,7 +399,7 @@ impl KvStore {
                             len: pointer.len,
                         });
                         io::copy(reader, &mut compact_writer)?;
-                        println!("compact new record {} to {}", pos, pos+pointer.len);
+                        //println!("compact new record {} to {}", pos, pos+pointer.len);
                         compact_writer.seek(SeekFrom::Start(pos + pointer.len))?;
                         
 
@@ -460,13 +464,6 @@ impl KvStore {
     }
     
     fn scroll(&mut self, scroll_step: u64) -> Result<()> {
-        let reader = Reader {
-            inner: OpenOptions::new()
-                        .read(true)
-                        .open(self.path.join(self.sequence_no.to_string() + ".log"))?
-        };
-        self.readers.insert(self.sequence_no, reader);
-
         self.sequence_no += scroll_step;
         self.writer = Writer {
             inner: OpenOptions::new()
@@ -474,6 +471,12 @@ impl KvStore {
                         .create_new(true)
                         .open(self.path.join(self.sequence_no.to_string() + ".log"))?
         };
+        let reader = Reader {
+            inner: OpenOptions::new()
+                        .read(true)
+                        .open(self.path.join(self.sequence_no.to_string() + ".log"))?
+        };
+        self.readers.insert(self.sequence_no, reader);
         Ok(())
     }
 }
