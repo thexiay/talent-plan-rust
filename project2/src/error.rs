@@ -1,4 +1,4 @@
-use std::{backtrace::Backtrace, ops::Deref, fmt::Formatter};
+use std::{backtrace::Backtrace, fmt::Formatter, ops::Deref};
 
 use thiserror::Error;
 
@@ -32,7 +32,7 @@ impl Deref for KvError {
 
 impl From<ErrorCode> for KvError {
     fn from(value: ErrorCode) -> Self {
-        KvError{
+        KvError {
             inner: Box::new(value),
             backtrace: Box::new(Backtrace::capture()),
         }
@@ -50,7 +50,6 @@ impl core::fmt::Debug for KvError {
         )
     }
 }
-
 
 impl From<std::env::VarError> for KvError {
     fn from(value: std::env::VarError) -> Self {

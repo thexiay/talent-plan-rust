@@ -1,7 +1,10 @@
-use std::{fs::File, io::{Seek, SeekFrom, Read, Write}};
+use std::{
+    fs::File,
+    io::{Read, Seek, SeekFrom, Write},
+};
 
 pub struct Reader {
-    inner: File
+    inner: File,
 }
 
 impl Seek for Reader {
@@ -22,14 +25,12 @@ impl Reader {
     }
 
     pub fn new(file: File) -> Self {
-        Self {
-            inner: file
-        }
-    } 
+        Self { inner: file }
+    }
 }
 
 pub struct Writer {
-    inner: File
+    inner: File,
 }
 
 impl Write for Writer {
@@ -54,8 +55,6 @@ impl Writer {
     }
 
     pub fn new(file: File) -> Self {
-        Self {
-            inner: file
-        }
+        Self { inner: file }
     }
 }

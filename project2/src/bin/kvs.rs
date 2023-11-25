@@ -2,8 +2,8 @@
 
 use clap::{Parser, Subcommand};
 use kvs::error::ErrorCode;
-use kvs::kv::KvStore;
 use kvs::error::Result;
+use kvs::kv::KvStore;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -21,14 +21,13 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-
     let opts = Opts::parse();
     let mut kv_store = KvStore::open(&std::env::current_dir()?)?;
     match opts.command {
         Commands::Get { key } => {
             match kv_store.get(key)? {
                 Some(value) => println!("{}", value),
-                None => println!("Key not found")
+                None => println!("Key not found"),
             }
             Ok(())
         }
@@ -36,7 +35,7 @@ fn main() -> Result<()> {
             kv_store.set(key, value)?;
             Ok(())
         }
-        Commands::Rm { key} => {
+        Commands::Rm { key } => {
             let res = kv_store.remove(key);
             if let Err(error) = &res && let ErrorCode::RmError(_) = **error {
                 println!("Key not found"); 
