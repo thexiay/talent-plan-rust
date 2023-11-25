@@ -17,15 +17,15 @@ pub enum Command {
 }
 
 impl Command {
-    fn set(key: &String, value: String) -> Command {
+    fn set(key: &str, value: String) -> Command {
         Command::Set {
-            key: key.clone(),
+            key: key.to_owned(),
             value,
         }
     }
 
-    fn rm(key: &String) -> Command {
-        Command::Rm { key: key.clone() }
+    fn rm(key: &str) -> Command {
+        Command::Rm { key: key.to_owned() }
     }
 }
 
@@ -75,7 +75,7 @@ pub struct KvStore {
 impl KvStore {
     pub fn open(path: &Path) -> Result<Self> {
         std::fs::create_dir_all(path)?;
-        let mut seq_list: Vec<u64> = fs::read_dir(&path)?
+        let mut seq_list: Vec<u64> = fs::read_dir(path)?
             .flat_map(|res| -> Result<_> { Ok(res?.path()) })
             .filter(|path| path.is_file() && path.extension() == Some("log".as_ref()))
             .flat_map(|path| {
@@ -96,8 +96,8 @@ impl KvStore {
         //println!("load from {:#?}", seq_list);
         for seq in seq_list.iter() {
             readers.insert(
-                seq.clone(),
-                Self::load(path, seq.clone(), &mut index, &mut stats)?,
+                *seq,
+                Self::load(path, *seq, &mut index, &mut stats)?,
             );
         }
         let sequence_no = seq_list.pop().map_or(1, |seq| seq + 1);
@@ -215,7 +215,7 @@ impl KvStore {
                 let reader = self
                     .readers
                     .get_mut(&index.seq)
-                    .expect(&format!("Invalid seq {} for current readers", &index.seq));
+                    .unwrap_or_else(|| panic!("Invalid seq {} for current readers", &index.seq));
                 //println!("load from {} len {}", index.pos, index.len);
                 reader.seek(SeekFrom::Start(index.pos))?;
                 let cmd_reader = reader.take(index.len);
@@ -289,13 +289,13 @@ impl KvStore {
                     .open(self.path.join(compact_seq.to_string() + ".tmp"))?,
             );
 
-            for key in self.index.keys().into_iter() {
+            for key in self.index.keys() {
                 if let Some(pointer) = self.index.get(key)
                         && to_be_compacted_seqs.contains(&pointer.seq)
                     {
                         let reader = self.readers
                             .get_mut(&pointer.seq)
-                            .expect(&format!("Invalid seq {} for current readers", &pointer.seq));
+                            .unwrap_or_else(|| panic!("Invalid seq {} for current readers", &pointer.seq));
                         if reader.pos()? != pointer.pos {
                             reader.seek(SeekFrom::Start(pointer.pos))?;
                         }
@@ -303,7 +303,7 @@ impl KvStore {
                         let pos = compact_writer.pos()?;
                         new_index.insert(key.clone(), Pointer {
                             seq: compact_seq,
-                            pos: pos,
+                            pos,
                             len: pointer.len,
                         });
                         std::io::copy(reader, &mut compact_writer)?;

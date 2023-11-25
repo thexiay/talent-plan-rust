@@ -26,7 +26,7 @@ impl Deref for KvError {
     type Target = ErrorCode;
 
     fn deref(&self) -> &Self::Target {
-        &*self.inner
+        &self.inner
     }
 }
 
