@@ -6,11 +6,11 @@ description = "A key-value store"
 edition = "2018"
 
 [dependencies]
-clap = "2.33.0"
+clap = { version = "4.4.8", features = ["derive"] }
 structopt = "0.2.15"
-failure = "0.1.5"
-serde = { version = "1.0.89", features = ["derive"] }
-serde_json = "1.0.39"
+thiserror = "1.0.50"
+serde = { version = "1.0.192", features = ["derive"] }
+serde_json = "1.0.108"
 log = "0.4.6"
 env_logger = "0.6.1"
 sled = "0.34.6"
