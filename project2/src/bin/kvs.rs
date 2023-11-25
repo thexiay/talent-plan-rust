@@ -1,13 +1,9 @@
 #![feature(let_chains)]
 
-use std::path::Path;
-use std::process::exit;
-
 use clap::{Parser, Subcommand};
-use kvs::ErrorCode;
-use kvs::KvError;
-use kvs::KvStore;
-use kvs::Result;
+use kvs::error::ErrorCode;
+use kvs::kv::KvStore;
+use kvs::error::Result;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
