@@ -16,6 +16,8 @@ log = "0.4.6"
 env_logger = "0.6.1"
 sled = "0.34.6"
 anyhow = "1.0.75"
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
 
 [dev-dependencies]
 assert_cmd = "0.11"

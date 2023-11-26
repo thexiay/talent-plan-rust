@@ -1,6 +1,7 @@
 use std::str::FromStr;
 use kvs::cli::Ipv4Port;
 use clap::{Parser, ValueEnum};
+use tracing::info;
 
 
 #[derive(Parser)]
@@ -30,6 +31,9 @@ impl Default for KvEngine {
 
 fn main() {
     let cli = Opts::parse();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .init();
 
-    println!("stub here");
+    info!("stub here");
 }

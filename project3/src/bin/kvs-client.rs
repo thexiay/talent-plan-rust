@@ -28,6 +28,11 @@ enum Commands {
 
 fn main() -> Result<()> {
     let opts = Opts::parse();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .init();
+
+    
     let mut kv_store = KvStore::open(&std::env::current_dir()?)?;
     match opts.command {
         Commands::Get { key } => {
