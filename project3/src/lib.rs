@@ -2,5 +2,7 @@
 #![feature(let_chains)]
 
 pub mod error;
-mod io;
 pub mod kv;
+pub mod cli;
+
+mod io;

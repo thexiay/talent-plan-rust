@@ -1,16 +1,22 @@
 #![feature(let_chains)]
 
+use std::str::FromStr;
+
 use clap::{Parser, Subcommand};
 use kvs::error::ErrorCode;
 use kvs::error::Result;
 use kvs::kv::KvStore;
+use kvs::cli::Ipv4Port;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Opts {
     #[command(subcommand)]
     command: Commands,
-    // 支持子命令: get ,set,remove
+    #[arg(long)]
+    #[arg(default_value_t = Ipv4Port::default())]
+    #[arg(value_parser = Ipv4Port::from_str)]
+    addr: Ipv4Port,
 }
 
 #[derive(Subcommand)]

@@ -9,11 +9,13 @@ edition = "2018"
 clap = { version = "4.4.8", features = ["derive"] }
 structopt = "0.2.15"
 thiserror = "1.0.50"
-serde = { version = "1.0.192", features = ["derive"] }
+serde = "1.0.192" 
+serde_derive = "1.0.192" 
 serde_json = "1.0.108"
 log = "0.4.6"
 env_logger = "0.6.1"
 sled = "0.34.6"
+anyhow = "1.0.75"
 
 [dev-dependencies]
 assert_cmd = "0.11"
