@@ -51,6 +51,12 @@ impl core::fmt::Debug for KvError {
     }
 }
 
+impl From<&str> for KvError {
+    fn from(value: &str) -> Self {
+        ErrorCode::InternalError(value.to_string()).into()
+    }
+}
+
 impl From<std::env::VarError> for KvError {
     fn from(value: std::env::VarError) -> Self {
         ErrorCode::InternalError(value.to_string()).into()
