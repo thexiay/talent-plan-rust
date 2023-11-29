@@ -1,16 +1,18 @@
-use crate::error::{ErrorCode, Result};
-use crate::io::{Reader, Writer};
-use clap::Subcommand;
-use serde_derive::{Deserialize, Serialize};
-use tracing::info;
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsStr,
-    fs::{self, OpenOptions},
+    fs::{self, OpenOptions, File},
     io::{Read, Seek, SeekFrom, Write},
     ops::Range,
     path::{Path, PathBuf},
 };
+
+use crate::{error::{ErrorCode, Result}, KvsEngine};
+use crate::io::{Reader, Writer};
+use clap::Subcommand;
+use serde_derive::{Deserialize, Serialize};
+use tracing::info;
+
 
 #[derive(Serialize, Deserialize)]
 pub enum Command {
@@ -74,10 +76,9 @@ pub struct KvStore {
 /// No, it will break the file
 /// 4.How do you maintain data-integrity if compaction fails?
 /// First replace memory index and second clean old log in one trafic
-impl KvStore {
-    pub fn open(path: &Path) -> Result<Self> {
+impl KvsEngine for KvStore {
+    fn open(path: &Path) -> Result<Self> {
         info!("Open kv store at {:#?}", path);
-        std::fs::create_dir_all(path)?;
         let mut seq_list: Vec<u64> = fs::read_dir(path)?
             .flat_map(|res| -> Result<_> { Ok(res?.path()) })
             .filter(|path| path.is_file() && path.extension() == Some("log".as_ref()))
@@ -129,6 +130,83 @@ impl KvStore {
         })
     }
 
+    fn set(&mut self, key: String, value: String) -> Result<()> {
+        let set = Command::set(&key, value);
+        let pos = self.writer.pos()?;
+        serde_json::to_writer(&mut self.writer, &set)?;
+        self.writer.flush()?;
+        let new_pos = self.writer.pos()?;
+        if let Some(old_record) = self.index.insert(
+            key,
+            Pointer {
+                seq: self.sequence_no,
+                pos,
+                len: new_pos - pos,
+            },
+        ) {
+            self.stats
+                .uncompacted
+                .entry(old_record.seq)
+                .and_modify(|v| *v += old_record.len)
+                .or_insert(old_record.len);
+            self.stats.total_uncompacted += old_record.len;
+        }
+
+        self.try_trigger_compact()?;
+        self.try_trigger_scroll()?;
+        Ok(())
+    }
+
+    fn get(&mut self, key: String) -> Result<Option<String>> {
+        match self.index.get(&key) {
+            Some(index) => {
+                let reader = self
+                    .readers
+                    .get_mut(&index.seq)
+                    .unwrap_or_else(|| panic!("Invalid seq {} for current readers", &index.seq));
+                //println!("load from {} len {}", index.pos, index.len);
+                reader.seek(SeekFrom::Start(index.pos))?;
+                let cmd_reader = reader.take(index.len);
+                match serde_json::from_reader(cmd_reader)? {
+                    Command::Set { value, .. } => Ok(Some(value)),
+                    _ => {
+                        Err(ErrorCode::InternalError(format!("invalid cmd at key {}", key)).into())
+                    }
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn remove(&mut self, key: String) -> Result<()> {
+        let rm = Command::rm(&key);
+        let pos = self.writer.pos()?;
+        serde_json::to_writer(&mut self.writer, &rm)?;
+        let new_pos = self.writer.pos()?;
+        match self.index.remove(&key) {
+            Some(old_record) => {
+                self.stats
+                    .uncompacted
+                    .entry(self.sequence_no)
+                    .and_modify(|x| *x += new_pos - pos)
+                    .or_insert(new_pos - pos);
+                self.stats
+                    .uncompacted
+                    .entry(old_record.seq)
+                    .and_modify(|f| *f += old_record.len)
+                    .or_insert(old_record.len);
+                self.stats.total_uncompacted += old_record.len + new_pos - pos
+            }
+            None => return Err(ErrorCode::RmError(key).into()),
+        }
+
+        self.try_trigger_compact()?;
+        self.try_trigger_scroll()?;
+        Ok(())
+    }
+}
+
+impl KvStore {
     /// Reload all data into memory, build memory index
     fn load(
         path: &Path,
@@ -183,81 +261,6 @@ impl KvStore {
             last_offset = iter.byte_offset();
         }
         Ok(reader)
-    }
-
-    pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        let set = Command::set(&key, value);
-        let pos = self.writer.pos()?;
-        serde_json::to_writer(&mut self.writer, &set)?;
-        self.writer.flush()?;
-        let new_pos = self.writer.pos()?;
-        if let Some(old_record) = self.index.insert(
-            key,
-            Pointer {
-                seq: self.sequence_no,
-                pos,
-                len: new_pos - pos,
-            },
-        ) {
-            self.stats
-                .uncompacted
-                .entry(old_record.seq)
-                .and_modify(|v| *v += old_record.len)
-                .or_insert(old_record.len);
-            self.stats.total_uncompacted += old_record.len;
-        }
-
-        self.try_trigger_compact()?;
-        self.try_trigger_scroll()?;
-        Ok(())
-    }
-
-    pub fn get(&mut self, key: String) -> Result<Option<String>> {
-        match self.index.get(&key) {
-            Some(index) => {
-                let reader = self
-                    .readers
-                    .get_mut(&index.seq)
-                    .unwrap_or_else(|| panic!("Invalid seq {} for current readers", &index.seq));
-                //println!("load from {} len {}", index.pos, index.len);
-                reader.seek(SeekFrom::Start(index.pos))?;
-                let cmd_reader = reader.take(index.len);
-                match serde_json::from_reader(cmd_reader)? {
-                    Command::Set { value, .. } => Ok(Some(value)),
-                    _ => {
-                        Err(ErrorCode::InternalError(format!("invalid cmd at key {}", key)).into())
-                    }
-                }
-            }
-            None => Ok(None),
-        }
-    }
-
-    pub fn remove(&mut self, key: String) -> Result<()> {
-        let rm = Command::rm(&key);
-        let pos = self.writer.pos()?;
-        serde_json::to_writer(&mut self.writer, &rm)?;
-        let new_pos = self.writer.pos()?;
-        match self.index.remove(&key) {
-            Some(old_record) => {
-                self.stats
-                    .uncompacted
-                    .entry(self.sequence_no)
-                    .and_modify(|x| *x += new_pos - pos)
-                    .or_insert(new_pos - pos);
-                self.stats
-                    .uncompacted
-                    .entry(old_record.seq)
-                    .and_modify(|f| *f += old_record.len)
-                    .or_insert(old_record.len);
-                self.stats.total_uncompacted += old_record.len + new_pos - pos
-            }
-            None => return Err(ErrorCode::RmError(key).into()),
-        }
-
-        self.try_trigger_compact()?;
-        self.try_trigger_scroll()?;
-        Ok(())
     }
 
     fn try_trigger_compact(&mut self) -> Result<()> {

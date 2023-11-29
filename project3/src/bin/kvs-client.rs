@@ -42,33 +42,36 @@ fn main() -> Result<()> {
 
     match opts.cmd {
         Command::Get{ .. } => {
-            let res = handle_receive(&mut stream)?;
-            match res {
-                GetResponse::Ok(Some(value)) => println!("{}", value),
-                GetResponse::Ok(None) => println!("Key not found!"),
-                GetResponse::Err(msg) => {
-                    eprintln!("{}", msg);
-                    exit(1)
+            if let Some(res) = handle_receive(&mut stream)? {
+                match res {
+                    GetResponse::Ok(Some(value)) => println!("{}", value),
+                    GetResponse::Ok(None) => println!("Key not found!"),
+                    GetResponse::Err(msg) => {
+                        eprintln!("{}", msg);
+                        exit(1)
+                    }
                 }
             }
         }
         Command::Rm{ .. } => {
-            let res = handle_receive(&mut stream)?;
-            match res {
-                RmResponse::Ok(()) => (),
-                RmResponse::Err(msg) => {
-                    eprintln!("{}", msg);
-                    exit(1)
+            if let Some(res) = handle_receive(&mut stream)? {
+                match res {
+                    RmResponse::Ok(()) => (),
+                    RmResponse::Err(msg) => {
+                        eprintln!("{}", msg);
+                        exit(1)
+                    }
                 }
             }
         }
         Command::Set{ .. } => {
-            let res = handle_receive(&mut stream)?;
-            match res {
-                SetResponse::Ok(()) => (),
-                SetResponse::Err(msg) => {
-                    eprintln!("{}", msg);
-                    exit(1)
+            if let Some(res) = handle_receive(&mut stream)? {
+                match res {
+                    SetResponse::Ok(()) => (),
+                    SetResponse::Err(msg) => {
+                        eprintln!("{}", msg);
+                        exit(1)
+                    }
                 }
             }
         }

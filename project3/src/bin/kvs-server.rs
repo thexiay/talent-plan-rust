@@ -1,8 +1,8 @@
 #![feature(let_chains)]
 
-use std::{str::FromStr, net::{TcpListener, IpAddr, TcpStream, Shutdown}, io::{Read, BufRead, Write}, path::PathBuf, fs, fmt::Display};
+use std::{str::FromStr, net::{TcpListener, IpAddr, TcpStream, Shutdown}, io::{Read, BufRead, Write}, path::{PathBuf, Path}, fs::{self, OpenOptions}, fmt::Display};
 
-use kvs::{cli::{Ipv4Port, Command, GetResponse, SetResponse, RmResponse}, kv::KvStore, error::{Result, ErrorCode}};
+use kvs::{cli::{Ipv4Port, Command, GetResponse, SetResponse, RmResponse}, KvStore, error::{Result, ErrorCode}, KvsEngine};
 use kvs::cli::handle_send;
 use kvs::cli::handle_receive;
 use kvs::cli::KvsRequest;
@@ -19,7 +19,7 @@ struct Opts {
     #[arg(long)]
     #[arg(default_value_t)]
     #[arg(value_enum)]
-    engine: KvEngine,
+    engine: Engine,
 }
 
 impl Display for Opts {
@@ -33,18 +33,18 @@ impl Display for Opts {
 }
 
 #[derive(ValueEnum, Clone, Debug)]
-enum KvEngine {
+enum Engine {
     KVS,
     SLED
 }   
 
-impl Default for KvEngine {
+impl Default for Engine {
     fn default() -> Self {
         Self::KVS
     }
 }
 
-impl Display for KvEngine {
+impl Display for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let str = match self {
             Self::KVS => "kvs",
@@ -62,18 +62,20 @@ fn main() -> Result<()> {
     info!("Welcome to use {}:{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     info!("Backend engine: {}", cli.engine);
     info!("Listen on {}", cli.addr);
-    let mut kv_store = KvStore::open(&std::env::current_dir()?)?;
+    let path = std::env::current_dir()?;
+    check(&path, cli.engine.to_string())?;
+    let mut kv_store = KvStore::open(&path)?;
 
     let listener = TcpListener::bind((IpAddr::V4(cli.addr.ipv4), cli.addr.port))?;
     // accept connections and process them serially
-    for mut stream in listener.incoming() {
-        if let Ok(ref mut stream) = stream {
-            match handle_connection(&mut kv_store, stream) {
-                Ok(_) => {
-                    info!("connection closed!")
+    for stream in listener.incoming() {
+        match stream {
+            Ok(mut stream) => {
+                if let Err(e) = handle_connection(&mut kv_store, &mut stream) {
+                    error!("Error on serve client: {}", e);
                 }
-                Err(e) => error!("connection occur exception: {}", e)
             }
+            Err(e) => error!("Connection failed: {}", e),
         }
     }
     Ok(())
@@ -81,7 +83,7 @@ fn main() -> Result<()> {
 
 fn handle_connection(kv_store: &mut KvStore, stream: &mut TcpStream) -> Result<()> {
     info!("Connection connected! for {}", stream.peer_addr()?);
-    while let KvsRequest::Cmd(cmd) = handle_receive(stream)? {
+    while let Some(KvsRequest::Cmd(cmd)) = handle_receive(stream)? {
         match cmd {
             Command::Get { key } => {
                 let res = GetResponse::Ok(kv_store.get(key)?);
@@ -105,5 +107,28 @@ fn handle_connection(kv_store: &mut KvStore, stream: &mut TcpStream) -> Result<(
         }
     }
     stream.shutdown(Shutdown::Both)?;
+    Ok(())
+}
+
+fn check(path: &Path, kv_type: String) -> Result<()> {
+    std::fs::create_dir_all(path)?;
+    let flag_file = path.join(".kvs");
+    if let Ok(meta) = fs::metadata(flag_file.clone()) && meta.is_file() {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(flag_file.clone())?;
+        let mut flag = String::new();
+        file.read_to_string(&mut flag)?;
+        if flag != kv_type {
+            return Err(ErrorCode::InternalError(format!("Illegal kvs database {} start", flag)).into());
+        } else {
+            return Ok(());
+        }
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(flag_file)?;
+    file.write_fmt(format_args!("{}", kv_type))?;
     Ok(())
 }

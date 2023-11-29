@@ -12,6 +12,10 @@ pub enum ErrorCode {
     SerDeError(#[from] serde_json::error::Error),
     #[error("delete not exists key: {0}")]
     RmError(String),
+    #[error("error from")]
+    SledError(#[from] sled::Error),
+    #[error("UTF-8 error: {0}")]
+    Utf8(#[from] std::string::FromUtf8Error),
 }
 
 pub type Result<T> = std::result::Result<T, KvError>;
@@ -80,5 +84,17 @@ impl From<serde_json::error::Error> for KvError {
 impl From<std::io::Error> for KvError {
     fn from(value: std::io::Error) -> Self {
         ErrorCode::NetworkError(value).into()
+    }
+}
+
+impl From<sled::Error> for KvError {
+    fn from(value: sled::Error) -> Self {
+        ErrorCode::SledError(value).into()
+    }
+}
+
+impl From<std::string::FromUtf8Error> for KvError {
+    fn from(value: std::string::FromUtf8Error) -> Self {
+        ErrorCode::Utf8(value).into()
     }
 }
