@@ -2,6 +2,7 @@ use crate::error::{ErrorCode, Result};
 use crate::io::{Reader, Writer};
 use clap::Subcommand;
 use serde_derive::{Deserialize, Serialize};
+use tracing::info;
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsStr,
@@ -75,6 +76,7 @@ pub struct KvStore {
 /// First replace memory index and second clean old log in one trafic
 impl KvStore {
     pub fn open(path: &Path) -> Result<Self> {
+        info!("Open kv store at {:#?}", path);
         std::fs::create_dir_all(path)?;
         let mut seq_list: Vec<u64> = fs::read_dir(path)?
             .flat_map(|res| -> Result<_> { Ok(res?.path()) })

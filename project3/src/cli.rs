@@ -4,14 +4,16 @@ use clap::Subcommand;
 use serde_derive::{Serialize, Deserialize};
 use tracing::debug;
 
-#[derive(Serialize, Deserialize, Subcommand)]
+use crate::error::ErrorCode;
+
+#[derive(Serialize, Deserialize, Subcommand, Clone)]
 pub enum Command {
     Set { key: String, value: String },
     Rm { key: String },
     Get { key: String},
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Ipv4Port {
     pub ipv4: Ipv4Addr,
     pub port: u16,
@@ -66,18 +68,31 @@ pub enum KvsRequest {
 }
 
 #[derive(Serialize, Deserialize)]
-pub enum KvsResponse {
-    Normal(String),
-    Warning(String),
-    Exception(String),
-    Error(String),
+pub enum SetResponse {
+    Ok(()),
+    Err(String)
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum RmResponse {
+    Ok(()),
+    Err(String)
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum GetResponse {
+    Ok(Option<String>),
+    Err(String)
 }
 
 pub fn handle_send<T>(stream: &mut TcpStream, value: &T) -> crate::error::Result<()> 
     where T: serde::ser::Serialize
 {
     let sered_message = serde_json::to_vec(&value)?;
-    assert!(sered_message.len() < u16::MAX as usize);
+    if sered_message.len() > u16::MAX as usize {
+        return Err(ErrorCode::InternalError(format!("valid len for send")).into())
+    }
+    
     stream.write(&(sered_message.len() as u16).to_be_bytes())?;
     stream.write(&sered_message)?;
     Ok(())
@@ -89,9 +104,11 @@ pub fn handle_receive<T>(stream: &mut TcpStream) -> crate::error::Result<T>
     let mut buf = Vec::<u8>::new();
     let mut len_stream = stream.take(std::mem::size_of::<u16>() as u64);
     len_stream.read_to_end(&mut buf)?;
-    assert!(buf.len() == std::mem::size_of::<u16>());
+    if buf.len() != std::mem::size_of::<u16>() {
+        return Err(ErrorCode::InternalError("invalid len for socket receive".into()).into())    
+    }
+    
     let cmd_len =  (buf[0] as u16) << 8 | (buf[1] as u16);
-    debug!("receive len {}", cmd_len);
     buf.clear();
 
     let value_stream = stream.take(cmd_len as u64);

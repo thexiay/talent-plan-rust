@@ -8,6 +8,8 @@ pub enum ErrorCode {
     InternalError(String),
     #[error(transparent)]
     NetworkError(#[from] std::io::Error),
+    #[error(transparent)]
+    SerDeError(#[from] serde_json::error::Error),
     #[error("delete not exists key: {0}")]
     RmError(String),
 }
@@ -63,15 +65,15 @@ impl From<std::env::VarError> for KvError {
     }
 }
 
-impl From<serde_json::error::Error> for KvError {
-    fn from(value: serde_json::error::Error) -> Self {
+impl From<std::str::Utf8Error> for KvError {
+    fn from(value: std::str::Utf8Error) -> Self {
         ErrorCode::InternalError(value.to_string()).into()
     }
 }
 
-impl From<std::str::Utf8Error> for KvError {
-    fn from(value: std::str::Utf8Error) -> Self {
-        ErrorCode::InternalError(value.to_string()).into()
+impl From<serde_json::error::Error> for KvError {
+    fn from(value: serde_json::error::Error) -> Self {
+        ErrorCode::SerDeError(value).into()
     }
 }
 
