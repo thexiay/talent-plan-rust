@@ -8,8 +8,6 @@ use std::{
 };
 
 use crate::{error::{ErrorCode, Result}, KvsEngine};
-use crate::io::{Reader, Writer};
-use clap::Subcommand;
 use serde_derive::{Deserialize, Serialize};
 use tracing::info;
 
@@ -394,5 +392,62 @@ impl KvStore {
         );
         self.readers.insert(self.sequence_no, reader);
         Ok(())
+    }
+}
+
+
+struct Reader {
+    inner: File,
+}
+
+impl Seek for Reader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+impl Read for Reader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl Reader {
+    pub fn pos(&mut self) -> std::io::Result<u64> {
+        self.inner.stream_position()
+    }
+
+    pub fn new(file: File) -> Self {
+        Self { inner: file }
+    }
+}
+
+struct Writer {
+    inner: File,
+}
+
+impl Write for Writer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl Seek for Writer {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+impl Writer {
+    pub fn pos(&mut self) -> std::io::Result<u64> {
+        self.inner.stream_position()
+    }
+
+    pub fn new(file: File) -> Self {
+        Self { inner: file }
     }
 }

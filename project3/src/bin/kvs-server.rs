@@ -2,10 +2,10 @@
 
 use std::{str::FromStr, net::{TcpListener, IpAddr, TcpStream, Shutdown, ToSocketAddrs}, io::{Read, BufRead, Write}, path::{PathBuf, Path}, fs::{self, OpenOptions}, fmt::Display, env::current_dir, process::exit};
 
-use kvs::{cli::{Ipv4Port, Command, GetResponse, SetResponse, RmResponse}, KvStore, error::{Result, ErrorCode}, KvsEngine, SledStore};
-use kvs::cli::handle_send;
-use kvs::cli::handle_receive;
-use kvs::cli::KvsRequest;
+use kvs::{common::{Ipv4Port, Command, GetResponse, SetResponse, RmResponse}, KvStore, error::{Result, ErrorCode}, KvsEngine, SledStore, KvServer};
+use kvs::common::handle_send;
+use kvs::common::handle_receive;
+use kvs::common::KvsRequest;
 use clap::{Parser, ValueEnum};
 use log::warn;
 use tracing::{info, debug, error};
@@ -82,10 +82,10 @@ fn main() {
 
         let path = std::env::current_dir()?;
         fs::write(path.join(".engine"), format!("{}", cli.engine))?;
+        let addr = (cli.addr.ipv4, cli.addr.port);
         match cli.engine {
-            Engine::KVS => run(KvStore::open(&path)?, (IpAddr::V4(cli.addr.ipv4), cli.addr.port)),
-            Engine::SLED => run(SledStore::open(&path)?, (IpAddr::V4(cli.addr.ipv4), cli.addr.port)),
-            
+            Engine::KVS => KvServer::serve_with_engine(KvStore::open(&path)?, addr),
+            Engine::SLED => KvServer::serve_with_engine(SledStore::open(&path)?, addr),
         }
     });
 
@@ -95,57 +95,6 @@ fn main() {
     }
 }
 
-fn run<E, Addr>(mut engine: E, addr: Addr) -> Result<()>
-    where E: KvsEngine, Addr: ToSocketAddrs
-{
-    let listener = TcpListener::bind(addr)?;
-    // accept connections and process them serially
-    for stream in listener.incoming() {
-        match stream {
-            Ok(mut stream) => {
-                if let Err(e) = handle_connection(&mut engine, &mut stream) {
-                    error!("Error on serve client: {}", e);
-                }
-            }
-            Err(e) => error!("Connection failed: {}", e),
-        }
-    }
-    Ok(())
-}
-
-fn handle_connection<T>(kv_store: &mut T, stream: &mut TcpStream) -> Result<()>
-    where T: KvsEngine    
-{
-    info!("Connection connected! for {}", stream.peer_addr()?);
-    while let Some(KvsRequest::Cmd(cmd)) = handle_receive(stream)? {
-        match cmd {
-            Command::Get { key } => {
-                let res = kv_store
-                    .get(key)
-                    .map_or_else(|x| GetResponse::Err(x.to_string()), 
-                        |x| GetResponse::Ok(x));
-                handle_send(stream, &res)?        
-            }
-            Command::Set { key, value } => {
-                let res = kv_store
-                    .set(key, value)
-                    .map_or_else(|x| SetResponse::Err(x.to_string()),
-                        |_| SetResponse::Ok(()));
-                handle_send(stream, &res)?
-            }
-            Command::Rm { key } => {
-                let res = kv_store
-                    .remove(key)
-                    .map_or_else(
-                        |x| RmResponse::Err(x.to_string()), 
-                        |_| RmResponse::Ok(()));
-                handle_send(stream, &res)?
-            }
-        }
-    }
-    stream.shutdown(Shutdown::Both)?;
-    Ok(())
-}
 
 fn current_engine() -> Result<Option<Engine>> {
     let engine = current_dir()?.join(".engine");

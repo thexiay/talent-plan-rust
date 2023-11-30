@@ -5,8 +5,10 @@ pub use engine::kvs::KvStore;
 pub use engine::KvsEngine;
 pub use engine::sled::SledStore;
 pub use error::Result;
-
+pub use server::KvServer;
 pub mod error;
-pub mod cli;
-mod io;
+pub mod common;
+
 mod engine;
+mod server;
+mod client;

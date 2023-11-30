@@ -8,15 +8,15 @@ use std::str::FromStr;
 use std::io::Write;
 
 use clap::Parser;
-use kvs::cli::GetResponse;
-use kvs::cli::KvsRequest;
-use kvs::cli::RmResponse;
-use kvs::cli::SetResponse;
-use kvs::cli::handle_receive;
+use kvs::common::GetResponse;
+use kvs::common::KvsRequest;
+use kvs::common::RmResponse;
+use kvs::common::SetResponse;
+use kvs::common::handle_receive;
 use kvs::error::Result;
-use kvs::cli::Command;
-use kvs::cli::handle_send;
-use kvs::cli::Ipv4Port;
+use kvs::common::Command;
+use kvs::common::handle_send;
+use kvs::common::Ipv4Port;
 use tracing::error;
 
 #[derive(Parser)]
