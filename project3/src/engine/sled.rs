@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use crate::KvsEngine;
+use crate::{KvsEngine, error::ErrorCode};
 
 use sled::{Db, IVec, Tree};
 
-struct SledStore {
+pub struct SledStore {
     tree: Db,
 }
 
@@ -18,6 +18,7 @@ impl KvsEngine for SledStore {
 
     fn set(&mut self, key: String, value: String) -> crate::Result<()> {
         self.tree.insert(key, value.as_str())?;
+        self.tree.flush()?;
         Ok(())
     }
 
@@ -30,7 +31,8 @@ impl KvsEngine for SledStore {
     }
 
     fn remove(&mut self, key: String) -> crate::Result<()> {
-        self.tree.remove(key)?;
+        self.tree.remove(key)?.ok_or(ErrorCode::RmKeyNotFound)?;
+        self.tree.flush()?;
         Ok(())
     }
 }

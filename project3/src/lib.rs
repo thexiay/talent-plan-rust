@@ -3,6 +3,7 @@
 
 pub use engine::kvs::KvStore;
 pub use engine::KvsEngine;
+pub use engine::sled::SledStore;
 pub use error::Result;
 
 pub mod error;

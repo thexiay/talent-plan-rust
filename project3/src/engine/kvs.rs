@@ -197,7 +197,7 @@ impl KvsEngine for KvStore {
                     .or_insert(old_record.len);
                 self.stats.total_uncompacted += old_record.len + new_pos - pos
             }
-            None => return Err(ErrorCode::RmError(key).into()),
+            None => return Err(ErrorCode::RmKeyNotFound.into()),
         }
 
         self.try_trigger_compact()?;

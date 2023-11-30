@@ -10,12 +10,12 @@ pub enum ErrorCode {
     NetworkError(#[from] std::io::Error),
     #[error(transparent)]
     SerDeError(#[from] serde_json::error::Error),
-    #[error("delete not exists key: {0}")]
-    RmError(String),
     #[error("error from")]
     SledError(#[from] sled::Error),
     #[error("UTF-8 error: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
+    #[error("Rm Key not found")]
+    RmKeyNotFound,
 }
 
 pub type Result<T> = std::result::Result<T, KvError>;
