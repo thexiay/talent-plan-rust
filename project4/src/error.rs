@@ -16,6 +16,8 @@ pub enum ErrorCode {
     Utf8(#[from] std::string::FromUtf8Error),
     #[error("Rm Key not found")]
     RmKeyNotFound,
+    #[error("Read Unexpected command")]
+    UnexpectedCommandType,
 }
 
 pub type Result<T> = std::result::Result<T, KvError>;
