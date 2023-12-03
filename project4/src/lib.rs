@@ -8,6 +8,7 @@ pub use error::Result;
 pub use server::KvServer;
 pub mod error;
 pub mod common;
+pub mod thread_pool;
 
 mod engine;
 mod server;

@@ -4,6 +4,7 @@ use crate::{KvsEngine, error::ErrorCode};
 
 use sled::{Db, IVec, Tree};
 
+#[derive(Clone)]
 pub struct SledStore {
     tree: Db,
 }
@@ -16,13 +17,13 @@ impl KvsEngine for SledStore {
         })
     }
 
-    fn set(&mut self, key: String, value: String) -> crate::Result<()> {
+    fn set(&self, key: String, value: String) -> crate::Result<()> {
         self.tree.insert(key, value.as_str())?;
         self.tree.flush()?;
         Ok(())
     }
 
-    fn get(&mut self, key: String) -> crate::Result<Option<String>> {
+    fn get(&self, key: String) -> crate::Result<Option<String>> {
         Ok(self.tree
             .get(key)?
             .map(|i_vec| AsRef::<[u8]>::as_ref(&i_vec).to_vec())
@@ -30,7 +31,7 @@ impl KvsEngine for SledStore {
             .transpose()?)
     }
 
-    fn remove(&mut self, key: String) -> crate::Result<()> {
+    fn remove(&self, key: String) -> crate::Result<()> {
         self.tree.remove(key)?.ok_or(ErrorCode::RmKeyNotFound)?;
         self.tree.flush()?;
         Ok(())

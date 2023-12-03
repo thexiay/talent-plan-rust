@@ -3,14 +3,14 @@ use std::path::Path;
 
 use crate::Result;
 
-pub trait KvsEngine {
+pub trait KvsEngine: Clone + Send + 'static {
     fn open(path: &Path) -> Result<Self> where Self: Sized;
 
-    fn set(&mut self, key: String, value: String) -> Result<()>;
+    fn set(&self, key: String, value: String) -> Result<()>;
 
-    fn get(&mut self, key: String) -> Result<Option<String>>;
+    fn get(&self, key: String) -> Result<Option<String>>;
 
-    fn remove(&mut self, key: String) -> Result<()>;
+    fn remove(&self, key: String) -> Result<()>;
 }
 
 pub mod kvs;

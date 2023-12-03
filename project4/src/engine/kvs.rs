@@ -1,8 +1,10 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
@@ -32,7 +34,12 @@ const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 /// # Ok(())
 /// # }
 /// ```
-pub struct KvStore {
+#[derive(Clone)]
+pub struct KvStore{
+    inner: Arc<Mutex<RefCell<SharedKvStore>>>
+}
+
+pub struct SharedKvStore {
     // directory for the log and other data
     path: PathBuf,
     // map generation number to the file reader
@@ -46,7 +53,7 @@ pub struct KvStore {
     uncompacted: u64,
 }
 
-impl KvStore {
+impl SharedKvStore {
     
     /// Clears stale entries in the log.
     pub fn compact(&mut self) -> Result<()> {
@@ -97,44 +104,6 @@ impl KvStore {
     fn new_log_file(&mut self, gen: u64) -> Result<BufWriterWithPos<File>> {
         new_log_file(&self.path, gen, &mut self.readers)
     }
-}
-
-impl KvsEngine for KvStore {
-/// Opens a `KvStore` with the given path.
-    ///
-    /// This will create a new directory if the given one does not exist.
-    ///
-    /// # Errors
-    ///
-    /// It propagates I/O or deserialization errors during the log replay.
-    fn open(path: &Path) -> Result<KvStore> {
-        fs::create_dir_all(path)?;
-
-        let mut readers = HashMap::new();
-        let mut index = BTreeMap::new();
-
-        let gen_list = sorted_gen_list(path)?;
-        let mut uncompacted = 0;
-
-        for &gen in &gen_list {
-            let mut reader = BufReaderWithPos::new(File::open(log_path(path, gen))?)?;
-            uncompacted += load(gen, &mut reader, &mut index)?;
-            readers.insert(gen, reader);
-        }
-
-        let current_gen = gen_list.last().unwrap_or(&0) + 1;
-        let writer = new_log_file(path, current_gen, &mut readers)?;
-
-        Ok(KvStore {
-            path: path.to_path_buf(),
-            readers,
-            writer,
-            current_gen,
-            index,
-            uncompacted,
-        })
-    }
-
 
     /// Sets the value of a string key to a string.
     ///
@@ -204,6 +173,64 @@ impl KvsEngine for KvStore {
         } else {
             Err(ErrorCode::RmKeyNotFound.into())
         }
+    }
+}
+
+impl KvsEngine for KvStore {
+    /// Opens a `KvStore` with the given path.
+    ///
+    /// This will create a new directory if the given one does not exist.
+    ///
+    /// # Errors
+    ///
+    /// It propagates I/O or deserialization errors during the log replay.
+    fn open(path: &Path) -> Result<KvStore> {
+        fs::create_dir_all(path)?;
+
+        let mut readers = HashMap::new();
+        let mut index = BTreeMap::new();
+
+        let gen_list = sorted_gen_list(path)?;
+        let mut uncompacted = 0;
+
+        for &gen in &gen_list {
+            let mut reader = BufReaderWithPos::new(File::open(log_path(path, gen))?)?;
+            uncompacted += load(gen, &mut reader, &mut index)?;
+            readers.insert(gen, reader);
+        }
+
+        let current_gen = gen_list.last().unwrap_or(&0) + 1;
+        let writer = new_log_file(path, current_gen, &mut readers)?;
+
+        Ok(KvStore {
+            inner: Arc::new(
+                Mutex::new(
+                    RefCell::new(
+                        SharedKvStore {
+                            path: path.to_path_buf(),
+                            readers,
+                            writer,
+                            current_gen,
+                            index,
+                            uncompacted,
+                        }
+                    )
+                )
+            ),
+        })
+            
+    }
+
+    fn set(&self, key: String, value: String) -> Result<()> {
+        self.inner.lock().unwrap().borrow_mut().set(key, value)
+    }
+
+    fn get(&self, key: String) -> Result<Option<String>> {
+        self.inner.lock().unwrap().borrow_mut().get(key)
+    }
+
+    fn remove(&self, key: String) -> Result<()> {
+        self.inner.lock().unwrap().borrow_mut().remove(key)
     }
 }
 
