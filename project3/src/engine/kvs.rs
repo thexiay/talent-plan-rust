@@ -1,16 +1,18 @@
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsStr,
-    fs::{self, OpenOptions, File},
+    fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     ops::Range,
     path::{Path, PathBuf},
 };
 
-use crate::{error::{ErrorCode, Result}, KvsEngine};
+use crate::{
+    error::{ErrorCode, Result},
+    KvsEngine,
+};
 use serde_derive::{Deserialize, Serialize};
 use tracing::info;
-
 
 #[derive(Serialize, Deserialize)]
 pub enum Command {
@@ -27,7 +29,9 @@ impl Command {
     }
 
     fn rm(key: &str) -> Command {
-        Command::Rm { key: key.to_owned() }
+        Command::Rm {
+            key: key.to_owned(),
+        }
     }
 }
 
@@ -97,10 +101,7 @@ impl KvsEngine for KvStore {
 
         //println!("load from {:#?}", seq_list);
         for seq in seq_list.iter() {
-            readers.insert(
-                *seq,
-                Self::load(path, *seq, &mut index, &mut stats)?,
-            );
+            readers.insert(*seq, Self::load(path, *seq, &mut index, &mut stats)?);
         }
         let sequence_no = seq_list.pop().map_or(1, |seq| seq + 1);
         //println!("open writer {}", sequence_no);
@@ -394,7 +395,6 @@ impl KvStore {
         Ok(())
     }
 }
-
 
 struct Reader {
     inner: File,

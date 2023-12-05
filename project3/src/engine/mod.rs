@@ -1,10 +1,11 @@
-
 use std::path::Path;
 
 use crate::Result;
 
 pub trait KvsEngine {
-    fn open(path: &Path) -> Result<Self> where Self: Sized;
+    fn open(path: &Path) -> Result<Self>
+    where
+        Self: Sized;
 
     fn set(&mut self, key: String, value: String) -> Result<()>;
 

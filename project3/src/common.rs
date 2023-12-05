@@ -1,18 +1,15 @@
-use std::{net::{Ipv4Addr, TcpStream}, fmt::Display, str::FromStr, io::{Read, Write}};
+use std::{
+    fmt::Display,
+    io::{Read, Write},
+    net::{Ipv4Addr, TcpStream},
+    str::FromStr,
+};
 
-use clap::Subcommand;
-use serde_derive::{Serialize, Deserialize};
-use tracing::{debug, warn};
+use log::warn;
+use serde_derive::{Deserialize, Serialize};
 
-use crate::error::Result;
 use crate::error::ErrorCode;
-
-#[derive(Serialize, Deserialize, Subcommand, Clone)]
-pub enum Command {
-    Set { key: String, value: String },
-    Rm { key: String },
-    Get { key: String},
-}
+use crate::error::Result;
 
 #[derive(Clone, Debug)]
 pub struct Ipv4Port {
@@ -20,12 +17,11 @@ pub struct Ipv4Port {
     pub port: u16,
 }
 
-
 impl Default for Ipv4Port {
     fn default() -> Self {
-        Self { 
-            ipv4: Ipv4Addr::new(127, 0, 0, 1), 
-            port: 4000
+        Self {
+            ipv4: Ipv4Addr::new(127, 0, 0, 1),
+            port: 4000,
         }
     }
 }
@@ -44,17 +40,11 @@ impl FromStr for Ipv4Port {
             Some((host, port_str)) => {
                 let ipv4 = host.parse::<Ipv4Addr>()?;
                 let port = port_str.parse::<u16>()?;
-                Ok(Ipv4Port {
-                    ipv4,
-                    port,
-                })
+                Ok(Ipv4Port { ipv4, port })
             }
-            None =>  {
+            None => {
                 let ipv4 = s.parse::<Ipv4Addr>()?;
-                Ok(Ipv4Port{
-                    ipv4,
-                    port: 4040
-                })
+                Ok(Ipv4Port { ipv4, port: 4040 })
             }
         }
     }
@@ -65,7 +55,7 @@ impl FromStr for Ipv4Port {
 pub enum KvsRequest {
     Set { key: String, value: String },
     Rm { key: String },
-    Get { key: String},
+    Get { key: String },
 }
 
 // todo: 自动映射
@@ -84,15 +74,11 @@ where
     fn handle(&mut self, req: Req) -> Res;
 
     /// This is for Server
-    fn response(&mut self, stream: &mut TcpStream) -> Result<bool> 
-    {
-        handle_receive::<Req>(stream)?
-            .map_or(Ok(false),
-                |req| {
-                    handle_send(stream, &(self.handle(req)))?;
-                    Ok(true)
-                }
-            )
+    fn response(&mut self, stream: &mut TcpStream) -> Result<bool> {
+        handle_receive::<Req>(stream)?.map_or(Ok(false), |req| {
+            handle_send(stream, &(self.handle(req)))?;
+            Ok(true)
+        })
     }
 }
 
@@ -102,48 +88,43 @@ where
     Res: serde::ser::Serialize + serde::de::DeserializeOwned,
 {
     /// This is for client
-    fn request(stream: &mut TcpStream, req: &Req) -> Result<Res>
-    {
+    fn request(stream: &mut TcpStream, req: &Req) -> Result<Res> {
         handle_send(stream, req)?;
-        handle_receive::<Res>(stream)?
-            .ok_or(ErrorCode::NetworkError(
-                    std::io::Error::from(
-                        std::io::ErrorKind::ConnectionAborted
-                    )
-                ).into()
-            )
+        handle_receive::<Res>(stream)?.ok_or(
+            ErrorCode::NetworkError(std::io::Error::from(std::io::ErrorKind::ConnectionAborted))
+                .into(),
+        )
     }
 }
 
-
-
-
-pub fn handle_send<T>(stream: &mut TcpStream, value: &T) -> crate::error::Result<()> 
-    where T: serde::ser::Serialize
+pub fn handle_send<T>(stream: &mut TcpStream, value: &T) -> crate::error::Result<()>
+where
+    T: serde::ser::Serialize,
 {
     let b_value = serde_json::to_vec(&value)?;
     if b_value.len() > u16::MAX as usize {
-        return Err(ErrorCode::InternalError(format!("valid len for send")).into())
+        return Err(ErrorCode::InternalError("valid len for send".to_string()).into());
     }
-    
-    stream.write(&(b_value.len() as u16).to_be_bytes())?;
-    stream.write(&b_value)?;
+
+    stream.write_all(&(b_value.len() as u16).to_be_bytes())?;
+    stream.write_all(&b_value)?;
     Ok(())
 }
 
 pub fn handle_receive<T>(stream: &mut TcpStream) -> crate::error::Result<Option<T>>
-    where T: serde::de::DeserializeOwned
+where
+    T: serde::de::DeserializeOwned,
 {
     let mut b_len = [0_u8; 2];
     match stream.read(&mut b_len) {
         Err(e) => return Err(e.into()),
-        Ok(len) if len == 0 => {
+        Ok(0) => {
             warn!("Another side close socket");
             return Ok(None);
         }
-        _ => ()
+        _ => (),
     }
-    
+
     let cmd = serde_json::from_reader(stream.take(u16::from_be_bytes(b_len) as u64))?;
     Ok(cmd)
 }

@@ -1,9 +1,11 @@
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 
-use std::net::{ToSocketAddrs, Shutdown, TcpStream, TcpListener};
+use log::{error, info};
 
-use log::{info, error};
-
-use crate::{Result, KvsEngine, common::{KvsRequest, handle_receive, Command, handle_send, KvsResponse, Service}};
+use crate::{
+    common::{KvsRequest, KvsResponse, Service},
+    KvsEngine, Result,
+};
 
 pub struct KvServer<E> {
     engine: E,
@@ -12,40 +14,28 @@ pub struct KvServer<E> {
 impl<E: KvsEngine> Service<KvsRequest, KvsResponse> for KvServer<E> {
     fn handle(&mut self, req: KvsRequest) -> KvsResponse {
         match req {
-            KvsRequest::Get { key } => {
-                self.engine
-                    .get(key)
-                    .map_or_else(|x| KvsResponse::Get(Err(x.to_string())), 
-                        |x| KvsResponse::Get(Ok(x)))      
-            }
-            KvsRequest::Set { key, value } => {
-                self.engine
-                    .set(key, value)
-                    .map_or_else(|x| KvsResponse::Set(Err(x.to_string())),
-                        |_| KvsResponse::Set(Ok(())))
-            }
-            KvsRequest::Rm { key } => {
-                self.engine
-                    .remove(key)
-                    .map_or_else(
-                        |x| KvsResponse::Rm(Err(x.to_string())), 
-                        |_| KvsResponse::Rm(Ok(())))
-            }
+            KvsRequest::Get { key } => self.engine.get(key).map_or_else(
+                |x| KvsResponse::Get(Err(x.to_string())),
+                |x| KvsResponse::Get(Ok(x)),
+            ),
+            KvsRequest::Set { key, value } => self.engine.set(key, value).map_or_else(
+                |x| KvsResponse::Set(Err(x.to_string())),
+                |_| KvsResponse::Set(Ok(())),
+            ),
+            KvsRequest::Rm { key } => self.engine.remove(key).map_or_else(
+                |x| KvsResponse::Rm(Err(x.to_string())),
+                |_| KvsResponse::Rm(Ok(())),
+            ),
         }
     }
 }
 /// A Server provide network rpc service for kv database
 impl<E: KvsEngine> KvServer<E> {
     pub fn new(engine: E) -> Self {
-        KvServer{ 
-            engine,
-        }
+        KvServer { engine }
     }
 
-    pub fn serve_with_engine<Addr: ToSocketAddrs>(
-        engine: E, 
-        addr: Addr
-    ) -> Result<()> {
+    pub fn serve_with_engine<Addr: ToSocketAddrs>(engine: E, addr: Addr) -> Result<()> {
         let mut server = KvServer::new(engine);
         server.serve(addr)
     }
@@ -66,8 +56,7 @@ impl<E: KvsEngine> KvServer<E> {
         Ok(())
     }
 
-    fn handle_connection(&mut self, stream: &mut TcpStream) -> Result<()>
-    {
+    fn handle_connection(&mut self, stream: &mut TcpStream) -> Result<()> {
         info!("Connection connected! for {}", stream.peer_addr()?);
         while self.response(stream)? {}
         stream.shutdown(Shutdown::Both)?;

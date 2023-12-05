@@ -1,10 +1,9 @@
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs, Shutdown};
+use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 
-use crate::{KvServer, KvsEngine};
-use crate::{Result, error::ErrorCode};
-use crate::common::{handle_send, Command, handle_receive, Service, ServiceProxy};
 use crate::common::KvsRequest;
 use crate::common::KvsResponse;
+use crate::common::ServiceProxy;
+use crate::{error::ErrorCode, Result};
 
 pub struct KvClient {
     pub stream: TcpStream,
@@ -13,14 +12,13 @@ pub struct KvClient {
 // todo: KvClient和proxy简化成一个类
 impl ServiceProxy<KvsRequest, KvsResponse> for KvClient {}
 
-impl KvClient{
-
+impl KvClient {
     pub fn new<Addr: ToSocketAddrs>(addr: Addr) -> Result<KvClient> {
-        Ok(KvClient{
+        Ok(KvClient {
             stream: TcpStream::connect(addr)?,
         })
-    }    
-    
+    }
+
     pub fn shutdown(&mut self) -> Result<()> {
         self.stream.shutdown(Shutdown::Both)?;
         Ok(())
@@ -28,8 +26,7 @@ impl KvClient{
 
     // 模版代码，装包解包，其实是KvServerProxy，可以通过宏自动生成
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        let mut stream = &mut self.stream;
-        let request = Self::request(&mut stream, &KvsRequest::Set { key, value });
+        let request = Self::request(&mut self.stream, &KvsRequest::Set { key, value });
         match request {
             Ok(KvsResponse::Set(Ok(res))) => Ok(res),
             Ok(KvsResponse::Set(Err(fn_err))) => Err(ErrorCode::InternalError(fn_err).into()),
@@ -49,8 +46,7 @@ impl KvClient{
     }
 
     pub fn rm(&mut self, key: String) -> Result<()> {
-        let mut stream = &mut self.stream;
-        let request = Self::request(&mut stream, &KvsRequest::Rm { key });
+        let request = Self::request(&mut self.stream, &KvsRequest::Rm { key });
         match request {
             Ok(KvsResponse::Rm(Ok(res))) => Ok(res),
             Ok(KvsResponse::Rm(Err(fn_err))) => Err(ErrorCode::InternalError(fn_err).into()),
@@ -59,4 +55,3 @@ impl KvClient{
         }
     }
 }
-
