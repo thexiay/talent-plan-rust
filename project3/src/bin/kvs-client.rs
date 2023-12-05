@@ -7,17 +7,11 @@ use std::process::exit;
 use std::str::FromStr;
 use std::io::Write;
 
-use clap::Parser;
-use kvs::common::GetResponse;
-use kvs::common::KvsRequest;
-use kvs::common::RmResponse;
-use kvs::common::SetResponse;
-use kvs::common::handle_receive;
 use kvs::error::Result;
+use clap::Parser;
+use kvs::KvClient;
 use kvs::common::Command;
-use kvs::common::handle_send;
 use kvs::common::Ipv4Port;
-use tracing::error;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -37,45 +31,35 @@ fn main() -> Result<()> {
         .init();
 
     // begin connect
-    let mut stream = TcpStream::connect((IpAddr::V4(opts.addr.ipv4), opts.addr.port))?;
-    handle_send(&mut stream, &KvsRequest::Cmd(opts.cmd.clone()))?;
-
+    let stream = TcpStream::connect((IpAddr::V4(opts.addr.ipv4), opts.addr.port))?;
+    let mut client = KvClient{ stream };
     match opts.cmd {
-        Command::Get{ .. } => {
-            if let Some(res) = handle_receive(&mut stream)? {
-                match res {
-                    GetResponse::Ok(Some(value)) => println!("{}", value),
-                    GetResponse::Ok(None) => println!("Key not found!"),
-                    GetResponse::Err(msg) => {
-                        eprintln!("{}", msg);
-                        exit(1)
-                    }
-                }
-            }
+        Command::Get{ key } => {
+            client.get(key)
+                .map_or_else(|e| {
+                    eprintln!("{}", e);
+                    exit(1);
+                }, |res| {
+                    res.map_or_else(
+                        || println!("Key not found"), 
+                        |x| println!("{}", x)
+                    );
+                });
         }
-        Command::Rm{ .. } => {
-            if let Some(res) = handle_receive(&mut stream)? {
-                match res {
-                    RmResponse::Ok(()) => (),
-                    RmResponse::Err(msg) => {
-                        eprintln!("{}", msg);
-                        exit(1)
-                    }
-                }
-            }
-        }
-        Command::Set{ .. } => {
-            if let Some(res) = handle_receive(&mut stream)? {
-                match res {
-                    SetResponse::Ok(()) => (),
-                    SetResponse::Err(msg) => {
-                        eprintln!("{}", msg);
-                        exit(1)
-                    }
-                }
-            }
+        Command::Rm{ key } => {
+            client.rm(key)
+                .map_or_else(|e| {
+                    eprintln!("{}", e);
+                    exit(1);
+                }, |_| ());
+        }   
+        Command::Set{ key, value } => {
+            client.set(key, value)
+                .map_or_else(|e| {
+                    eprintln!("{}", e);
+                    exit(1);
+                }, |_| ());
         }
     }
-    handle_send(&mut stream, &KvsRequest::End)?;
     Ok(())
 }

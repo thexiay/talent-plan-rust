@@ -1,11 +1,8 @@
 #![feature(let_chains)]
 
-use std::{str::FromStr, net::{TcpListener, IpAddr, TcpStream, Shutdown, ToSocketAddrs}, io::{Read, BufRead, Write}, path::{PathBuf, Path}, fs::{self, OpenOptions}, fmt::Display, env::current_dir, process::exit};
+use std::{str::FromStr, fs::{self}, fmt::Display, env::current_dir, process::exit};
 
-use kvs::{common::{Ipv4Port, Command, GetResponse, SetResponse, RmResponse}, KvStore, error::{Result, ErrorCode}, KvsEngine, SledStore, KvServer};
-use kvs::common::handle_send;
-use kvs::common::handle_receive;
-use kvs::common::KvsRequest;
+use kvs::{common::Ipv4Port, KvStore, error::{Result, ErrorCode}, KvsEngine, SledStore, KvServer};
 use clap::{Parser, ValueEnum};
 use log::warn;
 use tracing::{info, debug, error};

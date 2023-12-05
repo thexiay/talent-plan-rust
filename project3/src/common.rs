@@ -4,6 +4,7 @@ use clap::Subcommand;
 use serde_derive::{Serialize, Deserialize};
 use tracing::{debug, warn};
 
+use crate::error::Result;
 use crate::error::ErrorCode;
 
 #[derive(Serialize, Deserialize, Subcommand, Clone)]
@@ -38,7 +39,7 @@ impl Display for Ipv4Port {
 impl FromStr for Ipv4Port {
     type Err = anyhow::Error;
 
-    fn from_str(s: &str) -> Result<Self, anyhow::Error> {
+    fn from_str(s: &str) -> core::result::Result<Self, anyhow::Error> {
         match s.split_once(':') {
             Some((host, port_str)) => {
                 let ipv4 = host.parse::<Ipv4Addr>()?;
@@ -59,31 +60,63 @@ impl FromStr for Ipv4Port {
     }
 }
 
-/// here is the kvs protocol message
-/// 
+// todo: 自动映射
 #[derive(Serialize, Deserialize)]
 pub enum KvsRequest {
-    Cmd(Command),
-    End,
+    Set { key: String, value: String },
+    Rm { key: String },
+    Get { key: String},
 }
 
-#[derive(Serialize, Deserialize)]
-pub enum SetResponse {
-    Ok(()),
-    Err(String)
+// todo: 自动映射
+#[derive(Serialize, Deserialize, Debug)]
+pub enum KvsResponse {
+    Set(core::result::Result<(), String>),
+    Rm(core::result::Result<(), String>),
+    Get(core::result::Result<Option<String>, String>),
 }
 
-#[derive(Serialize, Deserialize)]
-pub enum RmResponse {
-    Ok(()),
-    Err(String)
+pub trait Service<Req, Res>
+where
+    Req: serde::ser::Serialize + serde::de::DeserializeOwned,
+    Res: serde::ser::Serialize + serde::de::DeserializeOwned,
+{
+    fn handle(&mut self, req: Req) -> Res;
+
+    /// This is for Server
+    fn response(&mut self, stream: &mut TcpStream) -> Result<bool> 
+    {
+        handle_receive::<Req>(stream)?
+            .map_or(Ok(false),
+                |req| {
+                    handle_send(stream, &(self.handle(req)))?;
+                    Ok(true)
+                }
+            )
+    }
 }
 
-#[derive(Serialize, Deserialize)]
-pub enum GetResponse {
-    Ok(Option<String>),
-    Err(String)
+pub trait ServiceProxy<Req, Res>
+where
+    Req: serde::ser::Serialize + serde::de::DeserializeOwned,
+    Res: serde::ser::Serialize + serde::de::DeserializeOwned,
+{
+    /// This is for client
+    fn request(stream: &mut TcpStream, req: &Req) -> Result<Res>
+    {
+        handle_send(stream, req)?;
+        handle_receive::<Res>(stream)?
+            .ok_or(ErrorCode::NetworkError(
+                    std::io::Error::from(
+                        std::io::ErrorKind::ConnectionAborted
+                    )
+                ).into()
+            )
+    }
 }
+
+
+
 
 pub fn handle_send<T>(stream: &mut TcpStream, value: &T) -> crate::error::Result<()> 
     where T: serde::ser::Serialize
@@ -101,9 +134,7 @@ pub fn handle_send<T>(stream: &mut TcpStream, value: &T) -> crate::error::Result
 pub fn handle_receive<T>(stream: &mut TcpStream) -> crate::error::Result<Option<T>>
     where T: serde::de::DeserializeOwned
 {
-    debug!("handle receive");
     let mut b_len = [0_u8; 2];
-    debug!("handle receive1");
     match stream.read(&mut b_len) {
         Err(e) => return Err(e.into()),
         Ok(len) if len == 0 => {
