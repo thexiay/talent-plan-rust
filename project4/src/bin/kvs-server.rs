@@ -1,14 +1,21 @@
 #![feature(let_chains)]
 
-use std::{str::FromStr, net::{TcpListener, IpAddr, TcpStream, Shutdown, ToSocketAddrs}, io::{Read, BufRead, Write}, path::{PathBuf, Path}, fs::{self, OpenOptions}, fmt::Display, env::current_dir, process::exit};
+use std::{
+    env::current_dir,
+    fmt::Display,
+    fs::{self},
+    process::exit,
+    str::FromStr,
+};
 
-use kvs::{common::{Ipv4Port, Command, GetResponse, SetResponse, RmResponse}, KvStore, error::{Result, ErrorCode}, KvsEngine, SledStore, KvServer};
-use kvs::common::handle_send;
-use kvs::common::handle_receive;
-use kvs::common::KvsRequest;
 use clap::{Parser, ValueEnum};
+use kvs::{
+    common::Ipv4Port,
+    error::{ErrorCode, Result},
+    KvServer, KvStore, KvsEngine, SledStore,
+};
 use log::warn;
-use tracing::{info, debug, error};
+use tracing::{error, info};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -25,23 +32,26 @@ struct Opts {
 
 impl Display for Opts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}, --addr {} --engine {}", 
+        write!(
+            f,
+            "{}:{}, --addr {} --engine {}",
             env!("CARGO_PKG_NAME"),
             env!("CARGO_PKG_VERSION"),
             self.addr,
-            self.engine)
+            self.engine
+        )
     }
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq, PartialOrd)]
 enum Engine {
-    KVS,
-    SLED
-}   
+    Kvs,
+    Sled,
+}
 
 impl Default for Engine {
     fn default() -> Self {
-        Self::KVS
+        Self::Kvs
     }
 }
 
@@ -50,19 +60,26 @@ impl FromStr for Engine {
 
     fn from_str(s: &str) -> std::prelude::v1::Result<Self, Self::Err> {
         match s {
-            "kvs" => Ok(Engine::KVS),
-            "sled" => Ok(Engine::SLED),
-            _ => Err(ErrorCode::InternalError(format!("error transfor from {}", s)))
+            "kvs" => Ok(Engine::Kvs),
+            "sled" => Ok(Engine::Sled),
+            _ => Err(ErrorCode::InternalError(format!(
+                "error transfor from {}",
+                s
+            ))),
         }
     }
 }
 
 impl Display for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", match self {
-            Engine::KVS => "kvs",
-            Engine::SLED => "sled",
-        })
+        write!(
+            f,
+            "{}",
+            match self {
+                Engine::Kvs => "kvs",
+                Engine::Sled => "sled",
+            }
+        )
     }
 }
 
@@ -71,7 +88,11 @@ fn main() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
-    info!("Welcome to use {}:{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    info!(
+        "Welcome to use {}:{}",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION")
+    );
     info!("Backend engine: {}", cli.engine);
     info!("Listen on {}", cli.addr);
     let res = current_engine().and_then(move |curr_engine| {
@@ -84,8 +105,8 @@ fn main() {
         fs::write(path.join(".engine"), format!("{}", cli.engine))?;
         let addr = (cli.addr.ipv4, cli.addr.port);
         match cli.engine {
-            Engine::KVS => KvServer::serve_with_engine(KvStore::open(&path)?, addr),
-            Engine::SLED => KvServer::serve_with_engine(SledStore::open(&path)?, addr),
+            Engine::Kvs => KvServer::serve_with_engine(KvStore::open(&path)?, addr),
+            Engine::Sled => KvServer::serve_with_engine(SledStore::open(&path)?, addr),
         }
     });
 
@@ -94,7 +115,6 @@ fn main() {
         exit(1)
     }
 }
-
 
 fn current_engine() -> Result<Option<Engine>> {
     let engine = current_dir()?.join(".engine");

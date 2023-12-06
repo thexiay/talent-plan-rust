@@ -6,6 +6,7 @@ pub use engine::KvsEngine;
 pub use engine::sled::SledStore;
 pub use error::Result;
 pub use server::KvServer;
+pub use client::KvClient;
 pub mod error;
 pub mod common;
 pub mod thread_pool;

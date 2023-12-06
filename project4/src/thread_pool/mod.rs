@@ -4,6 +4,7 @@ use crate::Result;
 mod native;
 mod shared_pool;
 mod rayon;
+mod mpmc;
 
 pub use self::native::NaiveThreadPool;
 pub use self::shared_pool::SharedQueueThreadPool;
