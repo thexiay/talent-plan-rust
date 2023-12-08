@@ -1,10 +1,9 @@
 use std::{thread::{spawn, sleep}, time::Duration, panic::{catch_unwind, AssertUnwindSafe}};
 
 use log::error;
+use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
 
-use crate::thread_pool::mpmc::channel;
-
-use super::{ThreadPool, mpmc::{Sender, Receiver}};
+use super::ThreadPool;
 
 
 pub struct SharedQueueThreadPool {
@@ -21,13 +20,11 @@ impl ThreadPool for SharedQueueThreadPool  {
     where 
         Self: Sized 
     {
-        let (tx, rx) = channel();
+        // lanuch `threads` nums thread with zero buffer
+        let (tx, rx) = bounded(0);
         (0..threads).for_each(|_| {
             let each_rx = rx.clone();
-            spawn(move || {
-                // 实现一个一直跑的逻辑，需要捕获rx
-                run(each_rx)
-            });
+            spawn(move || { run(each_rx) });
         });
         Ok(SharedQueueThreadPool {
             threads: threads as u64,
@@ -36,22 +33,28 @@ impl ThreadPool for SharedQueueThreadPool  {
     }
 
     fn spawn<F>(&self, job: F) where F: FnOnce() + Send + 'static {
-        self.spawner.send(Box::new(job))
+        self.spawner
+            .send(Box::new(job))
+            .expect("Thread pool has no thread left")
     }
 }
 
 fn run(rx: Receiver<Box<dyn FnOnce() + Send + 'static>>) {
 
     loop {
-        if let Some(f) = rx.receive() {
-            if let Err(cause) = catch_unwind(AssertUnwindSafe(|| {
-                f()
-            })) {
-                error!("user task panic catch: \n{:#?}", cause);
+        match rx.try_recv() {
+            Ok(f) => {
+                if let Err(cause) = catch_unwind(AssertUnwindSafe(|| {
+                    f()
+                })) {
+                    error!("user task panic catch: \n{:#?}", cause);
+                }
             }
+            Err(TryRecvError::Empty) => sleep(Duration::from_millis(100)),
+            Err(TryRecvError::Disconnected) => {
+                error!("thread pool is be destoryed.");
+                break;
+            }    
         }
-
-        // for every user task or idle rece, just sleep 0.1s
-        sleep(Duration::from_millis(100))    
     }
 }

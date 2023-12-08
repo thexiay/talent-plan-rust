@@ -12,7 +12,7 @@ use clap::{Parser, ValueEnum};
 use kvs::{
     common::Ipv4Port,
     error::{ErrorCode, Result},
-    KvServer, KvStore, KvsEngine, SledStore,
+    KvServer, KvStore, KvsEngine, SledStore, thread_pool::{SharedQueueThreadPool, ThreadPool},
 };
 use log::warn;
 use tracing::{error, info};
@@ -103,10 +103,11 @@ fn main() {
 
         let path = std::env::current_dir()?;
         fs::write(path.join(".engine"), format!("{}", cli.engine))?;
+        let pool = SharedQueueThreadPool::new(10)?;
         let addr = (cli.addr.ipv4, cli.addr.port);
         match cli.engine {
-            Engine::Kvs => KvServer::serve_with_engine(KvStore::open(&path)?, addr),
-            Engine::Sled => KvServer::serve_with_engine(SledStore::open(&path)?, addr),
+            Engine::Kvs => KvServer::serve_with_engine(KvStore::open(&path)?, pool, addr),
+            Engine::Sled => KvServer::serve_with_engine(SledStore::open(&path)?, pool, addr),
         }
     });
 

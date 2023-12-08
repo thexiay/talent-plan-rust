@@ -37,6 +37,8 @@ impl<T> Receiver<T> {
     }
 }
 
+/// 1.拥塞控制
+/// 2.高性能，无锁实现
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     // default for limitless cap
     let queue = Arc::new(

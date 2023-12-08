@@ -1,15 +1,23 @@
+use crate::error::ErrorCode;
+
 use super::ThreadPool;
+use super::Result;
 
+pub struct RayonThreadPool(rayon::ThreadPool);
 
-pub struct RayonThreadPool;
-
-impl ThreadPool for RayonThreadPool  {
-    fn new(threads: u32) -> crate::Result<Self>
-    where Self: Sized {
-        todo!()
+impl ThreadPool for RayonThreadPool {
+    fn new(threads: u32) -> Result<Self> {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads as usize)
+            .build()
+            .map_err(|e| ErrorCode::InternalError(format!("{}", e)))?;
+        Ok(RayonThreadPool(pool))
     }
 
-    fn spawn<F>(&self, job: F) where F: FnOnce() + Send + 'static {
-        todo!()
+    fn spawn<F>(&self, job: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.0.spawn(job)
     }
 }
