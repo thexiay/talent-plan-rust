@@ -5,7 +5,7 @@ use std::{
     str::FromStr,
 };
 
-use log::warn;
+use log::{warn, debug};
 use serde_derive::{Deserialize, Serialize};
 
 use crate::error::ErrorCode;
@@ -119,7 +119,8 @@ where
     match stream.read(&mut b_len) {
         Err(e) => return Err(e.into()),
         Ok(0) => {
-            warn!("Another side close socket");
+            // 因为这里无法区分是异常关闭还是正常 try去拉去数据导致的关闭，所以记录debug日志
+            debug!("Another side close socket");
             return Ok(None);
         }
         _ => (),

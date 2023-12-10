@@ -1,117 +1,133 @@
 
-use std::env;
-use std::fmt::Display;
-/// 测试多线程下的写入和读取性能
-/// 1. 写入，n个客户端，在每个单独的线程中写入10条数据，服务端有n(cpu cores)个服务线程工作
-/// 2. 读取
-/// 
-use std::iter;
-use std::net::IpAddr;
+#[macro_use]
+extern crate lazy_static;
+
 use std::net::Ipv4Addr;
+use std::net::SocketAddr;
 use std::net::SocketAddrV4;
-use std::net::ToSocketAddrs;
-use std::ops::Range;
 use std::thread::spawn;
 
 use criterion::BenchmarkId;
 use criterion::Criterion;
-use criterion::Throughput;
 use criterion::{criterion_group, criterion_main};
+use crossbeam_utils::sync::WaitGroup;
 use kvs::KvClient;
 use kvs::KvServer;
 use kvs::KvStore;
 use kvs::KvsEngine;
-use kvs::error::Result;
+use kvs::SledStore;
+use kvs::ThreadHandle;
+use kvs::thread_pool;
+use kvs::thread_pool::RayonThreadPool;
 use kvs::thread_pool::SharedQueueThreadPool;
 use kvs::thread_pool::ThreadPool;
 use log::info;
 use tempfile::TempDir;
 
-fn from_elem(c: &mut Criterion) {
-    let temp_dir = TempDir::new().unwrap();
+static A: i32 = 3;
+
+lazy_static! {
+    static ref SERVER_ADDR: SocketAddr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 5005).into();
+}
+
+fn write_group<SetUp>(c: &mut Criterion, setup: SetUp)
+where
+    SetUp: Fn(&TempDir, u32) -> ThreadHandle,
+{
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
+        .with_max_level(tracing::Level::INFO)
         .init();
     info!("begin bench");
 
-    let mut group = c.benchmark_group("from_elem");
-    for data_set in [
-        DataGenerater::new(0..100, 1), 
-        DataGenerater::new(0..100, 2), 
-        DataGenerater::new(0..100, 3)
-    ].iter() {
-        let client_thread_pool = SharedQueueThreadPool::new(10).unwrap();
-        let server_thread_pool = SharedQueueThreadPool::new(10).unwrap();
-        let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 5005);
-        let engine = KvStore::open(temp_dir.path()).unwrap();
-        spawn(move || KvServer::serve_with_engine(engine, server_thread_pool, addr).unwrap());
+    // init common tools
+    let temp_dir = TempDir::new().unwrap();
+    let mut group = c.benchmark_group("write_group");
+    let num_cpus = num_cpus::get() as u32;
+    let pool = RayonThreadPool::new(num_cpus * 2).unwrap();
+
+    for threads in [ 1, 2, 4, 8, num_cpus, num_cpus * 2 ].iter() {
+        let handle = setup(&temp_dir, *threads);
         group.bench_with_input(
-            BenchmarkId::new("Test write bench", data_set), 
-            data_set,
-         |b, data_set| {
-                b.iter(|| write_queued_kvstore(data_set.gen_set(), &client_thread_pool, addr))
+            BenchmarkId::new("Test write bench", threads), 
+            threads,
+        |b, _| {
+                b.iter(|| write(&pool))
         });
+        // when exit scope pool and server exit.
+        teardown_with_check(handle);
     }
     group.finish();
 }
 
-struct DataGenerater {
-    range: Range<u64>,
-    nums: u64
+fn write_rayon_sledkvengine(c: &mut Criterion) {
+    write_group(c, startup_with_rayon_sled);
 }
 
-impl Display for DataGenerater {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "({} nums in ({},{}))", self.nums, self.range.start, self.range.end)
-    }
+fn write_queued_kvstore(c: &mut Criterion) {
+    write_group(c,startup_with_shared);
+}
+
+fn teardown_with_check(handle: ThreadHandle) {
+    // for 1000 inputs
+    let mut client = KvClient::new(*SERVER_ADDR).unwrap();
+    (0..1000).for_each(|i| {
+        assert_eq!(
+            client.get(format!("key{}", i)).unwrap().unwrap(),
+            format!("value{}", i)
+        );
+    });
+    handle.shutdown().unwrap();
+}
+
+/// startup with different thread pool and different server
+fn startup_with_shared(
+    temp_dir: &TempDir, 
+    threads: u32, 
+) -> ThreadHandle {
+    let thread_pool = SharedQueueThreadPool::new(threads).unwrap();
+    let engine = KvStore::open(temp_dir.path()).unwrap();
+    KvServer::serve(engine, thread_pool, *SERVER_ADDR).unwrap()
+}
+
+fn startup_with_rayon(
+    temp_dir: &TempDir, 
+    threads: u32, 
+) -> ThreadHandle {
+    let thread_pool = RayonThreadPool::new(threads).unwrap();
+    let engine = KvStore::open(temp_dir.path()).unwrap();
+    KvServer::serve(engine, thread_pool, *SERVER_ADDR).unwrap()
+}
+
+fn startup_with_rayon_sled(
+    temp_dir: &TempDir, 
+    threads: u32, 
+) -> ThreadHandle {
+    let thread_pool = RayonThreadPool::new(threads).unwrap();
+    let engine = SledStore::open(temp_dir.path()).unwrap();
+    KvServer::serve(engine, thread_pool, *SERVER_ADDR).unwrap()
 }
 
 
-impl DataGenerater {
-    fn new(range: Range<u64>, nums: u64) -> DataGenerater {
-        DataGenerater { range, nums }
-    }
-    
-    fn gen_set(&self) -> impl Iterator<Item = (String, String)> {
-        let le = (&self.range.start).clone();
-        let len = self.range.size_hint().0;
-        (0..self.nums).map(move |i| {
-            let index = i % len as u64 + le;
-            (format!("key{}", index), format!("value{}", index))
-        })
-    }
-
-    fn gen_get(&self) -> impl Iterator<Item = String> {
-        let le = (&self.range.start).clone();
-        let len = self.range.size_hint().0;
-        (0..self.nums).map(move |i| 
-            format!("key{}", i % len as u64 + le)
-        )
-    }
-}
-
-
-fn write_queued_kvstore<Iter, P, Addr>(input: Iter, thread_pool: &P, addr: Addr) 
-where
-    Iter: Iterator<Item = (String, String)>, 
-    P: ThreadPool,
-    Addr: ToSocketAddrs + Send + Clone + 'static,
-{
-    input.for_each(|(key, value)| {
-        let add = addr.clone(); 
-        thread_pool.spawn(|| {
-            let mut client = KvClient::new(add).unwrap();
-            client.set(key, value).unwrap();
+fn write<P: ThreadPool>(thread_pool: &P) {
+    // for 1000 inputs write
+    let wg = WaitGroup::new();
+    (0..1000).for_each(|i| {
+        let wg = wg.clone();
+        thread_pool.spawn(move || {
+            let mut client = KvClient::new(*SERVER_ADDR).unwrap();
+            client.set(format!("key{}", i), format!("value{}", i)).unwrap();
             client.shutdown().unwrap();
-        })
-    })
-    
+            drop(wg);
+        });
+    });
+    wg.wait();
 }
+
 
 fn read_queued_kvstore() {
 
 }
 
 
-criterion_group!(benches, from_elem);
+criterion_group!(benches, write_queued_kvstore, write_rayon_sledkvengine);
 criterion_main!(benches);

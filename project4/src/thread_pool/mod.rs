@@ -10,7 +10,7 @@ pub use self::native::NaiveThreadPool;
 pub use self::shared_pool::SharedQueueThreadPool;
 pub use self::rayon::RayonThreadPool;
 
-pub trait ThreadPool {
+pub trait ThreadPool: Send + 'static {
     /// Creates a new thread pool, immediately spawning the specified number of
     /// threads.
     ///

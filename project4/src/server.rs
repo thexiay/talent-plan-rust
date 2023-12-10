@@ -1,16 +1,14 @@
-use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
+use std::{net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, SocketAddr}, thread::{spawn, JoinHandle}, sync::{atomic::{AtomicBool, Ordering}, Arc}, marker::PhantomData};
 
-use log::{error, info};
+use log::{error, info, warn, debug};
+use crossbeam_channel::bounded;
 
 use crate::{
     common::{KvsRequest, KvsResponse, Service},
-    KvsEngine, Result, thread_pool::ThreadPool,
+    KvsEngine, Result, thread_pool::ThreadPool, KvClient, error::ErrorCode,
 };
 
-pub struct KvServer<E, P> {
-    engine: E,
-    thread_pool: P,
-}
+
 
 impl<T:KvsEngine> Service<KvsRequest, KvsResponse> for T {
     fn handle(&mut self, req: KvsRequest) -> KvsResponse {
@@ -31,23 +29,34 @@ impl<T:KvsEngine> Service<KvsRequest, KvsResponse> for T {
     }
 }
 
+pub struct KvServer<E, P> {
+    _phantom_e: PhantomData<E>,
+    _phantom_p: PhantomData<P>,
+}
+
 /// A Server provide network rpc service for kv database
 impl<E: KvsEngine, P: ThreadPool> KvServer<E, P> {
-    pub fn new(engine: E, thread_pool: P) -> Self {
-        KvServer { engine, thread_pool}
-    }
-
-    pub fn serve_with_engine<Addr: ToSocketAddrs>(engine: E, thread_pool: P, addr: Addr) -> Result<()> {
-        let server = KvServer::new(engine, thread_pool);
-        server.serve(addr)
-    }
-
-    pub fn serve<Addr: ToSocketAddrs>(self, addr: Addr) -> Result<()> {
+    pub fn serve(engine: E, thread_pool: P, addr: SocketAddr) -> Result<ThreadHandle> {
+        let stop_flag = Arc::new(AtomicBool::new(false));
         let listener = TcpListener::bind(addr)?;
-        // accept connections and process them serially
+
+        let flag = stop_flag.clone();
+        let join = spawn(move || Self::run(engine, thread_pool, listener, flag) );
+        Ok(ThreadHandle {
+            join,
+            stop_flag,
+            addr
+        })
+    }
+
+    fn run(engine: E, thread_pool: P, listener: TcpListener, cond: Arc<AtomicBool>) {
         for stream in listener.incoming() {
-            let mut engine = self.engine.clone();
-            self.thread_pool.spawn(move || {
+            // check and stop this thread
+            if cond.load(Ordering::SeqCst) {
+                break;
+            }
+            let mut engine = engine.clone();
+            thread_pool.spawn(move || {
                 match stream {
                     Ok(mut stream) => {
                         if let Err(e) = handle_connection(&mut engine, &mut stream) {
@@ -57,17 +66,46 @@ impl<E: KvsEngine, P: ThreadPool> KvServer<E, P> {
                     Err(e) => error!("Connection failed: {}", e),
                 }
             })
-            
         }
-        Ok(())
     }
 }
 
 fn handle_connection<E: KvsEngine>(engine: &mut E, stream: &mut TcpStream) -> Result<()> {
     let peer = stream.peer_addr()?;
-    info!("Connection for {} connected!", peer);
+    debug!("Connection for {} connected!", peer);
     while engine.response(stream)? {}
     stream.shutdown(Shutdown::Both)?;
-    info!("Connection for {} close!", peer);
+    debug!("Connection for {} close!", peer);
     Ok(())
+}
+
+
+pub struct ThreadHandle {
+    // a handler to wait unit KvServer to finished
+    join: JoinHandle<()>,
+
+    // a flag to stop this thread
+    stop_flag: Arc<AtomicBool>,
+
+    // a server addr for fake connect to stop it.
+    addr: SocketAddr
+}
+
+impl ThreadHandle {
+    pub fn shutdown(self) -> Result<()> {
+        // send message close and connect once dummy
+        if let Ok(_) = self.stop_flag.compare_exchange(false, true,  Ordering::SeqCst,  Ordering::SeqCst) {
+            info!("close this kvserver.");
+            TcpStream::connect(self.addr)?;
+        };
+        warn!("This kv server may have been closed.");
+        Ok(())
+    }
+
+    pub fn join(self) -> Result<()> {
+        match self.join.join() {
+            Ok(_) => Ok(()),
+            Err(_) => Err(ErrorCode::InternalError("join thread failed".to_string()).into())
+        }
+    }
 }

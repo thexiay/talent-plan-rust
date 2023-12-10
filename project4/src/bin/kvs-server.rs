@@ -5,7 +5,7 @@ use std::{
     fmt::Display,
     fs::{self},
     process::exit,
-    str::FromStr,
+    str::FromStr, net::SocketAddr,
 };
 
 use clap::{Parser, ValueEnum};
@@ -104,10 +104,10 @@ fn main() {
         let path = std::env::current_dir()?;
         fs::write(path.join(".engine"), format!("{}", cli.engine))?;
         let pool = SharedQueueThreadPool::new(10)?;
-        let addr = (cli.addr.ipv4, cli.addr.port);
+        let addr: SocketAddr = (cli.addr.ipv4, cli.addr.port).into();
         match cli.engine {
-            Engine::Kvs => KvServer::serve_with_engine(KvStore::open(&path)?, pool, addr),
-            Engine::Sled => KvServer::serve_with_engine(SledStore::open(&path)?, pool, addr),
+            Engine::Kvs => KvServer::serve(KvStore::open(&path)?, pool, addr),
+            Engine::Sled => KvServer::serve(SledStore::open(&path)?, pool, addr),
         }
     });
 
