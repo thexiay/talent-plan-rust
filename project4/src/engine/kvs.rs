@@ -4,8 +4,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, Arc};
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread::{spawn, JoinHandle};
 
+use crossbeam_skiplist::map::Entry;
+use crossbeam_skiplist::SkipMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
 
@@ -35,8 +38,8 @@ const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 /// # }
 /// ```
 #[derive(Clone)]
-pub struct KvStore{
-    inner: Arc<Mutex<RefCell<SharedKvStore>>>
+pub struct KvStore {
+    inner: Arc<RwLock<SharedKvStore>>,
 }
 
 pub struct SharedKvStore {
@@ -53,9 +56,327 @@ pub struct SharedKvStore {
     uncompacted: u64,
 }
 
+#[derive(Clone)]
+pub struct ReadLockFreeKvStore {
+    path: Arc<PathBuf>,
+    reader: SharedReader,
+    writer: Arc<Mutex<SharedWriter>>,
+    index: Arc<HierarchicalIndex>,
+}
+
+/// Load the whole log file and store value locations in the index map.
+///
+/// Returns how many bytes can be saved after a compaction.
+fn rebuild_index(
+    gen: u64,
+    mut reader: BufReaderWithPos<File>,
+    index: &HierarchicalIndex,
+) -> Result<u64> {
+    // To make sure we read from the beginning of the file
+    let mut pos = reader.seek(SeekFrom::Start(0))?;
+    let mut stream = Deserializer::from_reader(reader).into_iter::<Command>();
+    let mut uncompacted = 0; // number of bytes that can be saved after a compaction
+    while let Some(cmd) = stream.next() {
+        let new_pos = stream.byte_offset() as u64;
+        match cmd? {
+            Command::Set { key, .. } => {
+                if let Some(old_cmd) = index.insert(key, (gen, pos..new_pos).into()) {
+                    uncompacted += old_cmd.len;
+                }
+            }
+            Command::Remove { key } => {
+                if let Some(old_cmd) = index.remove(&key) {
+                    uncompacted += old_cmd.len;
+                }
+                // the "remove" command itself can be deleted in the next compaction
+                // so we add its length to `uncompacted`
+                uncompacted += new_pos - pos;
+            }
+        }
+        pos = new_pos;
+    }
+    Ok(uncompacted)
+}
+
+impl KvsEngine for ReadLockFreeKvStore {
+    fn open(path: &Path) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        fs::create_dir_all(path)?;
+
+        // rebuild index
+        let gen_list = sorted_gen_list(path)?;
+        let mut uncompacted = 0;
+        let index = Arc::new(HierarchicalIndex::default());
+        for &gen in &gen_list {
+            let reader = BufReaderWithPos::new(File::open(log_path(path, gen))?)?;
+            uncompacted += rebuild_index(gen, reader, &index)?;
+        }
+
+        // all field
+        let path = Arc::new(PathBuf::from(path));
+        let reader = SharedReader {
+            index: index.clone(),
+            path: path.clone(),
+            readers: RefCell::new(BTreeMap::new()),
+        };
+        let current_gen = gen_list.last().unwrap_or(&0) + 1;
+        let writer = BufWriterWithPos::new(
+            OpenOptions::new()
+                .append(true)
+                .create_new(true)
+                .open(log_path(&path, current_gen))?
+        )?;
+        let writer = Arc::new(Mutex::new(SharedWriter {
+            path: path.clone(),
+            current_gen: 0,
+            uncompacted: 0,
+            total: 0,
+            writer,
+            index: index.clone(),
+        }));
+
+        Ok(ReadLockFreeKvStore {
+            path,
+            reader,
+            writer,
+            index,
+        })
+    }
+
+    fn set(&self, key: String, value: String) -> Result<()> {
+        self.writer.lock().unwrap().set(key, value)
+    }
+
+    fn get(&self, key: String) -> Result<Option<String>> {
+        self.reader.get(key)
+    }
+
+    fn remove(&self, key: String) -> Result<()> {
+        self.writer.lock().unwrap().remove(key)
+    }
+}
+
+// SharedReader cannot sync in thread
+struct SharedReader {
+    // a index to get from it
+    index: Arc<HierarchicalIndex>,
+    // a path to get record from it.
+    path: Arc<PathBuf>,
+    // a seq of readers associated with different gen
+    readers: RefCell<BTreeMap<u64, BufReaderWithPos<File>>>,
+}
+
+impl Clone for SharedReader {
+    fn clone(&self) -> Self {
+        Self {
+            index: Arc::clone(&self.index),
+            path: Arc::clone(&self.path),
+            readers: RefCell::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl SharedReader {
+    fn get(&self, key: String) -> Result<Option<String>> {
+        self.index
+            .get(key)
+            .map_or(Ok(None), |pos| -> Result<Option<String>> {
+                if !self.readers.borrow().contains_key(&pos.gen) {
+                    let reader = BufReaderWithPos::new(File::open(log_path(&self.path, pos.gen))?)?;
+                    self.readers.borrow_mut().insert(pos.gen, reader);
+                }
+
+                let mut binding = self.readers.borrow_mut();
+                let reader = binding.get_mut(&pos.gen).unwrap();
+                // seek and read
+                reader.seek(SeekFrom::Start(pos.pos))?;
+                let value = serde_json::from_reader(reader.take(pos.len))?;
+                Ok(Some(value))
+            })
+    }
+}
+
+struct SharedWriter {
+    // base file path
+    path: Arc<PathBuf>,
+    // the current writer gen
+    current_gen: u64,
+    // the number of bytes representing "stale" commands that could be
+    // deleted during a compaction
+    uncompacted: u64,
+    // the number of bytes has been write total ly
+    total: u64,
+    // current writer
+    writer: BufWriterWithPos<File>,
+    // a index is needed for update index
+    index: Arc<HierarchicalIndex>,
+}
+
+impl SharedWriter {
+    fn set(&mut self, key: String, value: String) -> Result<()> {
+        // 1. write kv into current writer
+        // 2. check if index has a key, if has, update it; if not insert it(index is thread safe)
+        // 3. check uncompacted bytes > COMPACT_THREHOLD? scroll it and compact
+        let cmd = Command::set(key, value);
+        let pos = self.writer.pos;
+        serde_json::to_writer(&mut self.writer, &cmd)?;
+        self.writer.flush()?;
+
+        self.total += self.writer.pos - pos;
+        if let Command::Set { key, .. } = cmd {
+            if let Some(cmd_pos) = self
+                .index
+                .insert(key, (self.current_gen, (pos..self.writer.pos)).into())
+            {
+                self.uncompacted += cmd_pos.len;
+            }
+        }        
+
+        if self.uncompacted > COMPACTION_THRESHOLD {
+            self.compact()?;
+        }
+        Ok(())
+    }
+
+    fn remove(&mut self, key: String) -> Result<()> {
+        // 1. write kv into current writer
+        // 2. check if index has a key, if has, delte it; if not, return an err(index is thread safe)
+        // 3. check uncompacted bytes > COMPACT_THREHOLD? scroll it and compact
+        let cmd = Command::remove(key);
+        let pos = self.writer.pos;
+        serde_json::to_writer(&mut self.writer, &cmd)?;
+        self.writer.flush()?;
+
+        self.total += self.writer.pos - pos;
+        if let Command::Remove { key } = cmd {
+            if let Some(cmd_pos) = self.index.remove(&key) {
+                self.uncompacted += cmd_pos.len + self.writer.pos - pos;
+            }
+        }
+
+        if self.uncompacted > COMPACTION_THRESHOLD {
+            self.compact()?;
+        }
+        Ok(())
+    }
+
+    // NOTICE: it has limit that it can onlu compact before last compact finish
+    fn compact(&mut self) -> Result<()> {
+        // 1. snapshot the index
+        // 2. keep gen sequential, the file gen during compaction is lager than the last file gen when snapshot,
+        // the file gen in normal wirte after compaction trigger is lager than all gen in compaction
+        // 3. run in another thread, so we must ensure what we need can send between thread:
+        // index,  snapshot
+        // 4. read all record in snapshot, write them into new file and generate new index
+        // 5. merge new index into current index,
+
+        fn compact_process(index: Arc<HierarchicalIndex>, gen: u64, path: PathBuf) -> Result<()> {
+            let mut writer = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(log_compact_path(&path, gen))?;
+            let mut readers = BTreeMap::<u64, File>::new();
+            let res = index.snapshot_read(|key, cmd_pos| -> Result<()> {
+                // rewrite it into new log
+                if !readers.contains_key(&cmd_pos.gen) {
+                    readers.insert(cmd_pos.gen, File::open(log_path(&path, cmd_pos.gen))?);
+                }
+
+                let reader = readers.get_mut(&cmd_pos.gen).unwrap();
+                reader.seek(SeekFrom::Start(cmd_pos.pos))?;
+
+                io::copy(&mut reader.take(cmd_pos.len), &mut writer)?;
+                writer.flush()?;
+                Ok(())
+            });
+
+            // commit if compact success
+            fs::rename(log_compact_path(&path, gen), log_path(&path, gen))?;
+            // remove useless readers
+            
+            // update memory index 
+            fs::remove_file(path); // delete useless file
+            Ok(())
+        }
+
+        let index = self.index.clone();
+        let gen = self.current_gen + 1;
+        let path = (*self.path).clone();
+        
+        spawn(move || {
+            compact_process(index, gen, path)
+        });
+
+        // after spawn compact
+        self.uncompacted -= self.index.snapshot();
+        self.current_gen += 2;
+        self.writer = BufWriterWithPos::new(
+            OpenOptions::new()
+                .create_new(true)
+                .append(true)
+                .open(log_path(&self.path, self.current_gen))?,
+        )?;
+        Ok(())
+    }
+}
+
+enum CommandIdx {
+    Index(CommandPos),
+    Tombstone,
+}
+
+/// A thread safe index, it can share between different thread safety
+#[derive(Default)]
+struct HierarchicalIndex {
+    // snapshot is last level, so it can't be has a delete record
+    snapshot: SkipMap<String, CommandPos>,
+    active: SkipMap<String, CommandIdx>,
+}
+
+impl HierarchicalIndex {
+    // return old record if replace a record, return none if not
+    fn insert(&self, key: String, value: CommandPos) -> Option<CommandPos> {
+        todo!()
+    }
+
+    // return pos if remove a record, return none if not
+    fn remove(&self, key: &String) -> Option<CommandPos> {
+        todo!()
+    }
+
+    // get from low level first
+    // it may be resulting in read amplificatio
+    fn get(&self, key: String) -> Option<CommandPos> {
+        todo!()
+    }
+
+    // produce level snapshot, make level_write into level1_snapshot, return reduced bytes
+    fn snapshot(&self) -> u64 {
+        todo!()
+    }
+
+    fn snapshot_read<F>(&self, mut f: F) -> Result<()>
+    where
+        F: FnMut(&String, &CommandPos) -> Result<()>,
+    {
+        for item in (&self.snapshot).into_iter() {
+            f(item.key(), item.value())?;
+        }
+        Ok(())
+    }
+}
+
 impl SharedKvStore {
-    
-    /// Clears stale entries in the log.
+    /// - execute opportunity：a separate thread to execute it ，just rewrite those data into new file and lock free
+    /// - index data race：lock index and replace those rewrite data key into current index when the compact is completed.
+    ///  write operation and compact operation will both update index，so they should lock when they update index
+    /// - compact fail tolerated: should keep  data consistency even if an error occurred during compact process
+    /// （just do not replace those new compacted file key into index ）
+    /// - Hierarchical index：it's a little bit like lsm index, but now it has only two level, one is for write, which
+    ///   could be modify ;one is for compact, it's a snapshot and it cann't be modify.
+    /// - Tombstone mechanism：now it is a lsm index,so delete record should be recored as a tombstone.
     pub fn compact(&mut self) -> Result<()> {
         // increase current gen by 2. current_gen + 1 is for the compaction file
         let compaction_gen = self.current_gen + 1;
@@ -203,34 +524,27 @@ impl KvsEngine for KvStore {
         let writer = new_log_file(path, current_gen, &mut readers)?;
 
         Ok(KvStore {
-            inner: Arc::new(
-                Mutex::new(
-                    RefCell::new(
-                        SharedKvStore {
-                            path: path.to_path_buf(),
-                            readers,
-                            writer,
-                            current_gen,
-                            index,
-                            uncompacted,
-                        }
-                    )
-                )
-            ),
+            inner: Arc::new(RwLock::new(SharedKvStore {
+                path: path.to_path_buf(),
+                readers,
+                writer,
+                current_gen,
+                index,
+                uncompacted,
+            })),
         })
-            
     }
 
     fn set(&self, key: String, value: String) -> Result<()> {
-        self.inner.lock().unwrap().borrow_mut().set(key, value)
+        self.inner.write().unwrap().set(key, value)
     }
 
     fn get(&self, key: String) -> Result<Option<String>> {
-        self.inner.lock().unwrap().borrow_mut().get(key)
+        self.inner.write().unwrap().get(key)
     }
 
     fn remove(&self, key: String) -> Result<()> {
-        self.inner.lock().unwrap().borrow_mut().remove(key)
+        self.inner.write().unwrap().remove(key)
     }
 }
 
@@ -307,6 +621,10 @@ fn load(
 
 fn log_path(dir: &Path, gen: u64) -> PathBuf {
     dir.join(format!("{}.log", gen))
+}
+
+fn log_compact_path(dir: &Path, gen: u64) -> PathBuf {
+    dir.join(format!("{}.tmp", gen))
 }
 
 /// Struct representing a command

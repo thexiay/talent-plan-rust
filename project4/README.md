@@ -1,4 +1,4 @@
-# PNA Rust Project 4: Concurrency and parallelism
+# nePNA Rust Project 4: Concurrency and parallelism
 
 **Task**: Create a _multi-threaded_, persistent key/value store server and client
 with synchronous networking over a custom protocol.
@@ -41,7 +41,6 @@ with synchronous networking over a custom protocol.
     - [Share flags and counters with atomics](#user-content-share-flags-and-counters-with-atomics)
   - [Implement lock-free readers](#user-content-implement-lock-free-readers)
 
-
 ## Introduction
 
 In this project you will create a simple key/value server and client that
@@ -51,7 +50,6 @@ concurrent implementations. The in-memory index will become a concurrent
 data structure, shared by all threads, and compaction will be done on a
 dedicated thread, to reduce latency of individual requests.
 
-
 ## Project spec
 
 The cargo project, `kvs`, builds a command-line key-value store client called
@@ -59,15 +57,12 @@ The cargo project, `kvs`, builds a command-line key-value store client called
 turn call into a library called `kvs`. The client speaks to the server over
 a custom protocol.
 
-The interface to the CLI is the same as in the [previous project]. The
+The interface to the CLI is the same as in the [previous project][previous project]. The
 difference this time is in the concurrent implementation, which will be
 described as we work through it.
 
-[previous project]: ../project-3/README.md
-
 The library interface is nearly the same except for two things. First this time
-all the `KvsEngine`, `KvStore`, etc. methods take `&self` instead of `&mut
-self`, and now it implements `Clone`. This is common with concurrent
+all the `KvsEngine`, `KvStore`, etc. methods take `&self` instead of `&mut self`, and now it implements `Clone`. This is common with concurrent
 data structures. Why is that? It's not that we're not going to be writing
 immutable code. It _is_ though going to be shared across threads. Why might that
 preclude using `&mut self` in the method signatures? If you don't know now,
@@ -83,7 +78,6 @@ The second is that the library in this project contains a new _trait_,
 
   Returns an error if any thread fails to spawn. All previously-spawned threads
   are terminated.
-
 - `ThreadPool::spawn<F>(&self, job: F) where F: FnOnce() + Send + 'static`
 
   Spawn a function into the threadpool.
@@ -96,7 +90,6 @@ By the end of this project there will be several implementations of this
 trait, and you will again perform benchmarking to compare them.
 
 This project should not require any changes at all to the client code.
-
 
 ## Project setup
 
@@ -120,7 +113,6 @@ panic-control = "0.1.4"
 ```
 
 As with previous projects, add enough definitions that the test suite builds.
-
 
 ## Background: blocking and multithreading
 
@@ -175,7 +167,6 @@ processed concurrently, and &mdash; if we have enough CPUs &mdash; in parallel:
 So that will be the focus of this project &mdash; to process requests in
 parallel.
 
-
 ## Part 1: Multithreading
 
 Your first try at introducing concurrency is going to be the simplest: spawning
@@ -201,8 +192,7 @@ integrate it into the new `KvStore`.
 
 **Test cases to complete**:
 
-  - `thread_pool::naive_thread_pool_*`
-
+- `thread_pool::naive_thread_pool_*`
 
 ## Part 2: Creating a shared `KvsEngine`
 
@@ -230,19 +220,15 @@ pub trait KvsEngine: Clone + Send + 'static {
 This gives us a lot of clues about the implementation strategy we're pursuing.
 First, think about why the engine needs to implement `Clone` when we have a
 multithreaded implementation. Consider the design of other concurrent data
-types in Rust, like [`Arc`]. Now think about why that makes us use `&self`
+types in Rust, like . Now think about why that makes us use `&self`
 instead of `&mut self`. What do you know about shared mutable state? By the end
 of this project be sure you understand the implications here &mdash; _this is
 what Rust is all about_.
 
-[`Arc`]: https://doc.rust-lang.org/std/sync/struct.Arc.html
-
 In this model, `KvsEngine` behaves like a _handle_ to another object, and
 because that object is shared between threads, it probably needs to live on the
-[heap], and because that shared state can't be mutable it needs to be protected by
+[heap][heap], and because that shared state can't be mutable it needs to be protected by
 some synchronization primitive.
-
-[heap]: https://stackoverflow.com/questions/79923/what-and-where-are-the-stack-and-heap
 
 So, _move the data inside your implementation of `KvsEngine`, `KvStore` onto
 the heap using a thread-safe shared pointer type and protect it behind a lock of
@@ -255,8 +241,7 @@ with a `KvsEngine` that can later be shared across threads.
 
 **Test cases to complete**:
 
-  - `kv_store::concurrent_*`
-
+- `kv_store::concurrent_*`
 
 ## Part 3: Adding multithreading to `KvServer`
 
@@ -287,7 +272,6 @@ requests. It should increase throughput, at least on multi-core machines.
 Again, you should still have a working client/server key-value store, now
 multithreaded.
 
-
 ## Part 4: Creating a real thread pool
 
 So now that you've got your multithreaded architecture in place, it's time to
@@ -315,18 +299,12 @@ How that call stack is allocated depends on details of the operating system and
 runtime, but can involve locks and syscalls. Syscalls again are not _that_
 expensive, but they are expensive when we're dealing with Rust levels of
 performance &mdash; reducing syscalls is a common source of easy optimizations.
-That stack then has to be carefully initialized so that first [stack frame]
+That stack then has to be carefully initialized so that first [stack frame][stack frame]
 contains the appropriate values for the base pointer and whatever else is needed
 in the stack's initial [function prologue][fp]. In Rust the stack needs to be
-configured with a [guard page] to prevent stack overflows, preserving memory
-safety. That takes two more syscalls, [to `mmap` and to `mprotect`][mp] (though
+configured with a [guard page][guard page] to prevent stack overflows, preserving memory
+safety. That takes two more syscalls, [to ][mp] (though
 on Linux in particular, those two syscalls are avoided).
-
-[guard page]: https://docs.microsoft.com/en-us/windows/desktop/Memory/creating-guard-pages
-[fp]: https://en.wikipedia.org/wiki/Function_prologue
-[stack frame]: https://en.wikipedia.org/wiki/Stack_frame
-[2mb]: https://github.com/rust-lang/rust/blob/6635fbed4ca8c65822f99e994735bd1877fb063e/src/libstd/sys/unix/thread.rs#L12
-[mp]: https://github.com/rust-lang/rust/blob/6635fbed4ca8c65822f99e994735bd1877fb063e/src/libstd/sys/unix/thread.rs#L315
 
 <!-- TODO: illustration? -->
 
@@ -334,18 +312,14 @@ That's just setting up the callstack. It's at least another syscall to create
 the new thread, at which point the kernel must do its own internal accounting
 for the new thread.
 
-In Rust, the C [libpthread] library handles most of this complexity.
+In Rust, the C [libpthread][libpthread] library handles most of this complexity.
 
-Then at some point the OS performs a [context switch] onto the new stack, and
+Then at some point the OS performs a [context switch][context switch] onto the new stack, and
 the thread runs. When the thread terminates all that work needs to be undone
 again.
 
 With a thread pool, all that setup overhead is only done for a few threads, and
 subsequent jobs are simply context switches into existing threads in the pool.
-
-[libpthread]: https://www.gnu.org/software/hurd/libpthread.html
-[context switch]: https://en.wikipedia.org/wiki/Context_switch
-
 
 ### So how do you build a thread pool?
 
@@ -359,14 +333,12 @@ work scheduling strategy, but it can be effective. What are the downsides?
 You have three important considerations here:
 
 1) _which data structure to use to distribute the work_ &mdash; it's going to be a
-  queue, and there is going to be one sender ("producer"), the thread listening
-  for TCP connections, and many recievers ("consumers"), the threads in the pool.
-
+   queue, and there is going to be one sender ("producer"), the thread listening
+   for TCP connections, and many recievers ("consumers"), the threads in the pool.
 2) _how to deal with panicking jobs_ &mdash; your pool runs arbitrary work items.
-  If a thread panics, the thread pool needs to recover in some way.
-
+   If a thread panics, the thread pool needs to recover in some way.
 3) _how to deal with shutdown_ &mdash; when the `ThreadPool` object goes out of
-  scope it needs to shut down every thread. It must not leave them idle.
+   scope it needs to shut down every thread. It must not leave them idle.
 
 These concerns are all intertwined since dealing with each of them may involve
 communication and synchronization between threads. Some solutions will be
@@ -397,7 +369,7 @@ design. In particular, shutting down can often be done implicitly if your queue
 returns a result indicating that the sender has been destroyed.
 
 There are many types of multithreaded queues. In Rust the most common is the
-[`mpsc`] channel, because it lives in Rust's standard library. This is a
+ channel, because it lives in Rust's standard library. This is a
 multi-producer, single consumer queue, so using it for your single-queue thread
 pool will require a lock of some kind. What's the downside of using a lock here?
 There are many other concurrent queue types in Rust, and each has pros and cons.
@@ -405,18 +377,14 @@ If you are willing to take a lock on both producer and consumer sides, then you
 could even use a `Mutex<VecDeque>`, but there's probably no reason to do that in
 production when better solutions exist.
 
-[`mpsc`]: https://doc.rust-lang.org/std/sync/mpsc/index.html
-
 _Historical note: the existence of channels in Rust's standard library is a bit
 of a curiosity, and is considered a mistake by some, as it betrays Rust's
 general philosophy of keeping the standard library minimal, focused on
 abstracting the operating system, and letting the crate ecosystem experiment
 with advanced data structures. Their presence is an artifact of Rust's
 development history and origins as a message-passing language like Go. Other
-libraries like [`crossbeam`] provide more sophisticated alternatives, and
+libraries like  provide more sophisticated alternatives, and
 sometimes more suitable options_ 😉.
-
-[`crossbeam`]: https://github.com/crossbeam-rs/crossbeam
 
 Your thread pool will need to deal with the case where the spawned function
 panics &mdash; simply letting panics destroy the threads in your pool would
@@ -427,34 +395,22 @@ another, or catch the panic and keep the existing thread running. What are the
 tradeoffs? You've got to pick one, but leave a comment in your code explaining
 your choice.
 
-Some of the tools at your disposal are [`thread::spawn`], [`thread::panicking`],
-[`catch_unwind`], [`mpsc`] channels, [`Mutex`], [crossbeam's MPMC
-channels][mpmc], and `thread`s [`JoinHandle`]. You may use any of these, but
+Some of the tools at your disposal are , ,
+,  channels, , [crossbeam's MPMC][mpmc], and `thread`s . You may use any of these, but
 probably not all.
-
-[`thread::spawn`]: https://doc.rust-lang.org/std/thread/fn.spawn.html
-[`thread::panicking`]: https://doc.rust-lang.org/std/thread/fn.panicking.html
-[`catch_unwind`]: https://doc.rust-lang.org/std/panic/fn.catch_unwind.html
-[`mpsc`]: https://doc.rust-lang.org/std/sync/mpsc/index.html
-[`Mutex`]: https://doc.rust-lang.org/std/sync/struct.Mutex.html
-[mpmc]: https://docs.rs/crossbeam/0.7.1/crossbeam/channel/index.html
-[`JoinHandle`]: https://doc.rust-lang.org/std/thread/struct.JoinHandle.html
 
 _Create the `SharedQueueThreadPool` type, implementing `ThreadPool`_.
 
 **Test cases to complete**:
 
-  - `shared_queue_thread_pool_*`
+- `shared_queue_thread_pool_*`
 
 Replace the `NaiveThreadPool` used by `KvServer` with `SharedQueueThreadPool`.
 Again your `kvs-server` should still work the same as previously, now with a
 slightly more clever multithreading model. This time you'll want to call
 the thread pool constructor with an appropriate number of threads. For
-now you can create a thread per CPU, using the [`num_cpus`] crate. We'll
+now you can create a thread per CPU, using the  crate. We'll
 revisit the number of threads later.
-
-[`num_cpus`]: https://docs.rs/num_cpus/
-
 
 ## Part 5: Abstracted thread pools
 
@@ -467,15 +423,10 @@ the `ThreadPool` implementation, the constructor to accept the thread pool
 as its second argument, and use that threadpool to distribute the work.
 
 Finally create one more `ThreadPool` implementation, `RayonThreadPool`,
-using the `ThreadPool` type from the [`rayon`] crate.
+using the `ThreadPool` type from the  crate.
 
-Rayon's thread pool uses a more sophisticated scheduling strategy called ["work
-stealing"][ws], and we'll expect it to perform better than ours, but who knows
+Rayon's thread pool uses a more sophisticated scheduling strategy called ["work][ws], and we'll expect it to perform better than ours, but who knows
 until we try!
-
-[`rayon`]: https://docs.rs/rayon/
-[ws]: https://www.dre.vanderbilt.edu/~schmidt/PDF/work-stealing-dequeue.pdf
-
 
 ## Part 6: Evaluating your thread pool
 
@@ -493,13 +444,11 @@ _Note: the next two sections describe a fairly complex set of benchmarks. They
 can be written (probably… nobody has done it yet), but it may be challenging
 both to understand and to write efficiently. These sections do introduce some
 useful criterion features, but if it's too overwhelming it's ok to skip
-[forward] (and file a bug about what didn't work for you). On the other hand,
+[forward][forward] (and file a bug about what didn't work for you). On the other hand,
 the difficulty here may present a good learning opportunity. Finally,
 implementing these benchmarks as described requires a way to shutdown
 `KvsServer` programmatically (i.e. without sending `SIGKILL` and letting the OS
 do it), which we have not previously discussed._
-
-[forward]: #user-content-background-the-limit-of-locks
 
 So as part of this you will need to make sure the `SledKvsEngine` implementation
 you wrote as part of the previous project works again in this multithreaded
@@ -535,8 +484,6 @@ benchmarker like criterion runs a single piece of code many times in a loop,
 measuring the time it takes through each loop. As such we want to put only the
 code we want to measure in the loop, and leave as much outside of the loop as we
 can.
-
-[bi]: https://bheisler.github.io/criterion.rs/book/user_guide/benchmarking_with_inputs.html
 
 So take this simple example of a criterion benchmark with inputs:
 
@@ -584,7 +531,6 @@ perfect tool for that in your `SharedQueueThreadPool`. Set that up with a thread
 per request, and pair it with some channels to report back that the response is
 received, and you will have a suitable benchmark harness.
 
-
 ### Ok, now to the first two benchmarks
 
 We have said that this is a parameterized benchmark, and the parameter to the
@@ -613,8 +559,7 @@ benchmarking thread once?
 
 Call this benchmark `write_queued_kvstore` (or whatever).
 
-For the read-heavy workload, during setup, create the `KvServer<KvStore,
-SharedQueueThreadPool>`, with the thread pool containing the parameterized
+For the read-heavy workload, during setup, create the `KvServer<KvStore, SharedQueueThreadPool>`, with the thread pool containing the parameterized
 number of threads, and create your client thread pool containing 1000 threads.
 Still in the setup phase, create yet another client and initialize 1000 unique
 keys of the same length, all to identical values.
@@ -648,7 +593,6 @@ factors, so your results might be different from anybody elses.
 
 That's a good reason to always benchmark, and not speculate about performance.
 We can make educated guesses, but we don't know until we test.
-
 
 <!-- TODO: not sure if this would actually improve perf
 
@@ -705,7 +649,6 @@ TODO: Can we explain how to use perf to measure context switch time?
 
 -->
 
-
 ## Part 7: Evaluating other thread pools and engines
 
 Ok. You've gotten the most difficult part of this benchmarking exercise out of
@@ -733,7 +676,6 @@ counts? Are the results surprising? Can you imagine why the differences exist?
 sled]. Get used to reading other people's source code. That is where you will
 learn the most. -->
 
-
 ### Extension 1: Comparing functions
 
 Now you have identical benchmarks for three different thread pools, and you have
@@ -741,9 +683,6 @@ run them and compared their performance yourself. Criterion has built-in support
 for comparing multiple implementations. Check out ["comparing functions"][cp] in
 the Criterion User Guide and modify your benchmarks so that criterion does the
 comparison itself. Check out those gorgeous graphs.
-
-[cp]: https://bheisler.github.io/criterion.rs/book/user_guide/comparing_functions.html
-
 
 ### Background: The limits of locks
 
@@ -846,13 +785,10 @@ pub struct SharedKvStore {
 
 This `Arc<Mutex<T>>` solution is trivial, correct, and common:
 
-- The [`Arc`] puts the value on the heap so it can be shared between threads,
+- The  puts the value on the heap so it can be shared between threads,
   and provides a `clone` method to create a "handle" to it for each thread.
-- The [`Mutex`] provides a way to regain write access to the value without having
+- The  provides a way to regain write access to the value without having
   an existing `&mut` reference.
-
-[`Arc`]: https://doc.rust-lang.org/std/sync/struct.Arc.html
-[`Mutex`]: https://doc.rust-lang.org/std/sync/struct.Mutex.html
 
 This is a perfectly reasonable solution for many cases. But in this case that
 mutex will be a source of _contention_ under load: the `Mutex` doesn't only
@@ -863,15 +799,13 @@ by another thread. Any requests will block any other concurrent request.
 What we _really_ want is to not have to take locks, or &mdash; if locks are
 necessary &mdash; for them to rarely contend with other threads.
 
-The next step up in sophistication from a `Mutex` is the [`RwLock`], the
+The next step up in sophistication from a `Mutex` is the , the
 "reader-writer lock". This is another common type of lock that every programmer
 of parallel software must know. The improvement that a reader-writer lock makes
 over a mutex is that it allows _either_ any number of readers, _or_ a single
 writer. So in Rust terms, a `RwLock` will hand out any number of `&` pointers
 simultaneously, or a single `&mut` pointer. Readers still block on writers
 and writers still block on readers and other writers.
-
-[`RwLock`]: https://doc.rust-lang.org/std/sync/struct.RwLock.html
 
 In our database that means that all read requests can be satisfied concurrently,
 but when a single write request comes in, all other activity in the system stops
@@ -897,7 +831,6 @@ flow looks like:
 
 It's better, since the readers never block each other, but you can do better
 than that still.
-
 
 ## Part 8: Lock-free readers
 
@@ -941,11 +874,9 @@ threads to make as much progress as we can, while still maintaining logical
 consistency of the data.
 
 This is where the difficult reasoning with multithreading really begins. If you
-remove that big lock, Rust is still going to protect you from [_data races_],
+remove that big lock, Rust is still going to protect you from [data races][_data races_],
 but it is not going to help you maintain the logical consistency between the
 fields necessary to maintain the invariants of your data store.
-
-[_data races_]: https://blog.regehr.org/archives/490
 
 So before thinking about the solution, let's think about our requirements. We
 need to:
@@ -965,7 +896,6 @@ need to:
 The rest of this section is background on a variety of subjects that will be
 helpful to achieve the above, but that is the entire goal for the remaining
 project: modify `KvStore` to perform reads concurrently with writes.
-
 
 ### Explaining our example data structure
 
@@ -1020,14 +950,12 @@ writing, reading, and compaction producing inconsistent results, since they all
 happened on the same thread. Now if you are not careful with your data structure
 selection and their usage, it will be easy to corrupt the state of your database.
 
-
 ### Strategies for breaking up locks
 
 The key to advanced parallel programming is to know the tools available and when
 to use them. Here are some techniques we found useful while implementing this
 project, some of which you will need as well. They are discussed in the
 context of the example data structure presented above.
-
 
 #### Understand and maintain sequential consistency
 
@@ -1069,7 +997,6 @@ It may not be so bad if the value of `uncompacted` can be seen to change before
 the data is committed to file, but it's a decision that has to be made for each
 value that is synchronized independently.
 
-
 #### Identify immutable values
 
 You've probably read a lot about immutability in Rust, and about how immutable
@@ -1078,7 +1005,6 @@ values are the best for concurrency &mdash; just throw them behind an `Arc` and
 don't think about them again.
 
 In our example, `PathBuf` is immutable.
-
 
 #### Duplicate values instead of sharing
 
@@ -1092,21 +1018,16 @@ the number of threads in the threadpool.
 In our example, again `PathBuf` is easily clonable.
 
 Less obviously though, consider how to share access to files across threads. The
-[`File`] type requires mutable access for both reads and writes. So to share it
+ type requires mutable access for both reads and writes. So to share it
 across threads would require a lock that grants that mutable access. What is a
 `File` though? It's not actually a file &mdash; it's just a handle to the
 physical resource on disk, and it's fine to have multiple handles to the same
 file open at once. Note the API for `File` though &mdash; it doesn't implement
-`Clone`, and while it does have this enticing [`try_clone`] method, its
+`Clone`, and while it does have this enticing  method, its
 semantics have some complex implications for multi-threaded applications.
 Does seeking a `File` affect another `File` that created by `try_clone` ?
 Please consider the differences between `File`s from `File::open` and `try_clone`.
-Using `try_clone` or `File::open`, it's your choice. [`pread`] may help.
-
-[`File`]: https://doc.rust-lang.org/std/fs/struct.File.html
-[`try_clone`]: https://doc.rust-lang.org/std/fs/struct.File.html#method.try_clone
-[`pread`]: https://stackoverflow.com/questions/1687275/what-is-the-difference-between-read-and-pread-in-unix
-
+Using `try_clone` or `File::open`, it's your choice.  may help.
 
 #### Break up data structures by role
 
@@ -1120,7 +1041,6 @@ operations another.
 Making this distinction will further make it very obvious which resources are
 accessed by both, since the reader and writer will both carry shared handles to
 those resources.
-
 
 #### Use specialized concurrent data structures
 
@@ -1136,23 +1056,18 @@ whether there exist concurrent associative data structures.
 There are, and using them is key to completing this project.
 
 But how can you know that? The first step is ask whether concurrent maps exist.
-You could do this in `#beginners` on the [Rust Discord], but in this case
+You could do this in `#beginners` on the [Rust Discord][Rust Discord], but in this case
 searching "concurrent map" on the web will definitely give the answer.
 
 That's the easy part, finding the right concurrent map _in Rust_ is harder. A
-good first step is to learch [libs.rs]. libs.rs is like crates.io but where
+good first step is to learch [libs.rs][libs.rs]. libs.rs is like crates.io but where
 crates.io contains all published libraries, libs.rs is curated to contain only
 libraries that are well-regarded by ... well, somebody. So if it's on libs.rs
 then that's one indication that the library is usable, another is the download
-count on [crates.io] &mdash; in general, more downloaded crates are more tested
+count on [crates.io][crates.io] &mdash; in general, more downloaded crates are more tested
 than less downloaded crates. The download count can be seen as a rough proxy for
 the number of people who "vouch" for the crate. And finally, asking in chat
 is always a good idea.
-
-[Rust Discord]: https://doc.rust-lang.org/std/fs/struct.File.html#method.try_clone
-[libs.rs]: https://libs.rs
-[crates.io]: https://crates.io
-
 
 #### Postpone cleanup until later
 
@@ -1169,27 +1084,18 @@ general-purpose garbage collector.
 In practice though, neither is all memory management and reclaimation in C done
 with `malloc`/`free`, nor is all memory management in Java done with the GC.
 Just as a trivial example, it is common for high-performance applications in
-both to rely on specialized [arenas], in which allocations can both be reused as
+both to rely on specialized [arenas][arenas], in which allocations can both be reused as
 well as deallocated in large batches, to optimize their memory access patterns.
 
-[arenas]: https://www.quora.com/In-C++-what-is-a-memory-arena
-
 Likewise in Rust, not all memory is freed deterministically. Trivial examples
-are in the [`Rc`] and [`Arc`] types that implement [resource counting], a simple
+are in the  and  types that implement [resource counting], a simple
 kind of GC.
-
-[`Rc`]: https://doc.rust-lang.org/std/rc/struct.Rc.html
-[`Arc`]: https://doc.rust-lang.org/std/sync/struct.Arc.html
-[reference counting]: https://en.wikipedia.org/wiki/Reference_counting
 
 One of the greatest benefits of global garbage collectors is that they make many
 lock-free data structures possible. Many of the lock-free data structures
 described in academic literature rely on the GC for their operation. The need to
 adapt lock-free algorithms to not rely on a GC is the original motivation for
-the [`crossbeam`] library and its [`epoch`] type.
-
-[`crossbeam`]: https://github.com/crossbeam-rs/crossbeam
-[`epoch`]: https://docs.rs/crossbeam/0.7.1/crossbeam/epoch/index.html
+the  library and its  type.
 
 All this is to say that garbage collection comes in many forms, and its basic
 strategy of delaying the cleanup of resources until some future time is powerful
@@ -1197,7 +1103,6 @@ in many scenarios.
 
 When you can't figure out how to perform some concurrent work _right now_, it
 can be useful to ask "can I just do this later?"
-
 
 #### Share flags and counters with atomics
 
@@ -1208,16 +1113,11 @@ pointer, and as the Rust `usize` type). If two threads use atomics correctly
 then the result of a write in one thread is visible immediately to a read in the
 other thread. In addition to making reads or writes immediately visible, atomic
 operations also constrain how the compiler and CPU may reorder instructions, in
-Rust via the [`Ordering`] flag.
-
-[atomic operations]: https://preshing.com/20130618/atomic-vs-non-atomic-operations/
-[`atomic`]: https://doc.rust-lang.org/std/sync/atomic/
-[`Ordering`]: https://doc.rust-lang.org/std/sync/atomic/enum.Ordering.html
+Rust via the  flag.
 
 When moving from the course-grained parallelism of locks to more fine-grain
 parallelism, its often necessary to augment off-the-shelf concurrent data
 structures with atomics.
-
 
 ### Implement lock-free readers
 
@@ -1229,7 +1129,6 @@ _Modify `KvStore` to perform reads concurrently with writes._
 And afterward…
 
 Nice coding, friend. Enjoy a nice break.
-
 
 <!--
 
@@ -1262,7 +1161,6 @@ TODO: just do a read-write benchmark in the earlier section,
 TODO: make sure benchmark section always mentions to assert the results
 -->
 
-
 <!--
 ---
 
@@ -1274,7 +1172,6 @@ TODO: make sure benchmark section always mentions to assert the results
 - need to refactor previous projects to use multiple logs
 - this should be fairly challenging
 -->
-
 
 <!--
 
@@ -1302,3 +1199,48 @@ TODO: make sure benchmark section always mentions to assert the results
 - mention condvars somewhere
 
 -->
+
+[previous project]: ../project-3/README.md
+[`Arc`]: https://doc.rust-lang.org/std/sync/struct.Arc.html
+[heap]: https://stackoverflow.com/questions/79923/what-and-where-are-the-stack-and-heap
+[guard page]: https://docs.microsoft.com/en-us/windows/desktop/Memory/creating-guard-pages
+[fp]: https://en.wikipedia.org/wiki/Function_prologue
+[stack frame]: https://en.wikipedia.org/wiki/Stack_frame
+[2mb]: https://github.com/rust-lang/rust/blob/6635fbed4ca8c65822f99e994735bd1877fb063e/src/libstd/sys/unix/thread.rs#L12
+[mp]: https://github.com/rust-lang/rust/blob/6635fbed4ca8c65822f99e994735bd1877fb063e/src/libstd/sys/unix/thread.rs#L315
+[libpthread]: https://www.gnu.org/software/hurd/libpthread.html
+[context switch]: https://en.wikipedia.org/wiki/Context_switch
+[`mpsc`]: https://doc.rust-lang.org/std/sync/mpsc/index.html
+[`crossbeam`]: https://github.com/crossbeam-rs/crossbeam
+[`thread::spawn`]: https://doc.rust-lang.org/std/thread/fn.spawn.html
+[`thread::panicking`]: https://doc.rust-lang.org/std/thread/fn.panicking.html
+[`catch_unwind`]: https://doc.rust-lang.org/std/panic/fn.catch_unwind.html
+[`mpsc`]: https://doc.rust-lang.org/std/sync/mpsc/index.html
+[`Mutex`]: https://doc.rust-lang.org/std/sync/struct.Mutex.html
+[mpmc]: https://docs.rs/crossbeam/0.7.1/crossbeam/channel/index.html
+[`JoinHandle`]: https://doc.rust-lang.org/std/thread/struct.JoinHandle.html
+[`num_cpus`]: https://docs.rs/num_cpus/
+[`rayon`]: https://docs.rs/rayon/
+[ws]: https://www.dre.vanderbilt.edu/~schmidt/PDF/work-stealing-dequeue.pdf
+[forward]: #user-content-background-the-limit-of-locks
+[bi]: https://bheisler.github.io/criterion.rs/book/user_guide/benchmarking_with_inputs.html
+[cp]: https://bheisler.github.io/criterion.rs/book/user_guide/comparing_functions.html
+[`Arc`]: https://doc.rust-lang.org/std/sync/struct.Arc.html
+[`Mutex`]: https://doc.rust-lang.org/std/sync/struct.Mutex.html
+[`RwLock`]: https://doc.rust-lang.org/std/sync/struct.RwLock.html
+[_data races_]: https://blog.regehr.org/archives/490
+[`File`]: https://doc.rust-lang.org/std/fs/struct.File.html
+[`try_clone`]: https://doc.rust-lang.org/std/fs/struct.File.html#method.try_clone
+[`pread`]: https://stackoverflow.com/questions/1687275/what-is-the-difference-between-read-and-pread-in-unix
+[Rust Discord]: https://doc.rust-lang.org/std/fs/struct.File.html#method.try_clone
+[libs.rs]: https://libs.rs
+[crates.io]: https://crates.io
+[arenas]: https://www.quora.com/In-C++-what-is-a-memory-arena
+[`Rc`]: https://doc.rust-lang.org/std/rc/struct.Rc.html
+[`Arc`]: https://doc.rust-lang.org/std/sync/struct.Arc.html
+[reference counting]: https://en.wikipedia.org/wiki/Reference_counting
+[`crossbeam`]: https://github.com/crossbeam-rs/crossbeam
+[`epoch`]: https://docs.rs/crossbeam/0.7.1/crossbeam/epoch/index.html
+[atomic operations]: https://preshing.com/20130618/atomic-vs-non-atomic-operations/
+[`atomic`]: https://doc.rust-lang.org/std/sync/atomic/
+[`Ordering`]: https://doc.rust-lang.org/std/sync/atomic/enum.Ordering.html
