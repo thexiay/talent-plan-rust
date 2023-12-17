@@ -1,16 +1,24 @@
-use std::{net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, SocketAddr}, thread::{spawn, JoinHandle}, sync::{atomic::{AtomicBool, Ordering}, Arc}, marker::PhantomData};
+use std::{
+    marker::PhantomData,
+    net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread::{spawn, JoinHandle},
+};
 
-use log::{error, info, warn, debug};
 use crossbeam_channel::bounded;
+use log::{debug, error, info, warn};
 
 use crate::{
     common::{KvsRequest, KvsResponse, Service},
-    KvsEngine, Result, thread_pool::ThreadPool, KvClient, error::ErrorCode,
+    error::ErrorCode,
+    thread_pool::ThreadPool,
+    KvClient, KvsEngine, Result,
 };
 
-
-
-impl<T:KvsEngine> Service<KvsRequest, KvsResponse> for T {
+impl<T: KvsEngine> Service<KvsRequest, KvsResponse> for T {
     fn handle(&mut self, req: KvsRequest) -> KvsResponse {
         match req {
             KvsRequest::Get { key } => self.get(key).map_or_else(
@@ -41,11 +49,11 @@ impl<E: KvsEngine, P: ThreadPool> KvServer<E, P> {
         let listener = TcpListener::bind(addr)?;
 
         let flag = stop_flag.clone();
-        let join = spawn(move || Self::run(engine, thread_pool, listener, flag) );
+        let join = spawn(move || Self::run(engine, thread_pool, listener, flag));
         Ok(ThreadHandle {
             join,
             stop_flag,
-            addr
+            addr,
         })
     }
 
@@ -56,15 +64,13 @@ impl<E: KvsEngine, P: ThreadPool> KvServer<E, P> {
                 break;
             }
             let mut engine = engine.clone();
-            thread_pool.spawn(move || {
-                match stream {
-                    Ok(mut stream) => {
-                        if let Err(e) = handle_connection(&mut engine, &mut stream) {
-                            error!("Error on serve client: {}", e);
-                        }
+            thread_pool.spawn(move || match stream {
+                Ok(mut stream) => {
+                    if let Err(e) = handle_connection(&mut engine, &mut stream) {
+                        error!("Error on serve client: {}", e);
                     }
-                    Err(e) => error!("Connection failed: {}", e),
                 }
+                Err(e) => error!("Connection failed: {}", e),
             })
         }
     }
@@ -79,7 +85,6 @@ fn handle_connection<E: KvsEngine>(engine: &mut E, stream: &mut TcpStream) -> Re
     Ok(())
 }
 
-
 pub struct ThreadHandle {
     // a handler to wait unit KvServer to finished
     join: JoinHandle<()>,
@@ -88,13 +93,16 @@ pub struct ThreadHandle {
     stop_flag: Arc<AtomicBool>,
 
     // a server addr for fake connect to stop it.
-    addr: SocketAddr
+    addr: SocketAddr,
 }
 
 impl ThreadHandle {
     pub fn shutdown(self) -> Result<()> {
         // send message close and connect once dummy
-        if let Ok(_) = self.stop_flag.compare_exchange(false, true,  Ordering::SeqCst,  Ordering::SeqCst) {
+        if let Ok(_) =
+            self.stop_flag
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        {
             info!("close this kvserver.");
             TcpStream::connect(self.addr)?;
         };
@@ -105,7 +113,7 @@ impl ThreadHandle {
     pub fn join(self) -> Result<()> {
         match self.join.join() {
             Ok(_) => Ok(()),
-            Err(_) => Err(ErrorCode::InternalError("join thread failed".to_string()).into())
+            Err(_) => Err(ErrorCode::InternalError("join thread failed".to_string()).into()),
         }
     }
 }

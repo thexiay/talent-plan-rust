@@ -1,14 +1,17 @@
+use std::borrow::BorrowMut;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{spawn, JoinHandle};
 
 use crossbeam_skiplist::map::Entry;
 use crossbeam_skiplist::SkipMap;
+use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
 
@@ -18,6 +21,7 @@ use crate::Result;
 use std::ffi::OsStr;
 
 const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
+const READER_CLEAN_THRESHOLD: u64 = 1024;
 
 /// The `KvStore` stores string key/value pairs.
 ///
@@ -106,7 +110,7 @@ impl KvsEngine for ReadLockFreeKvStore {
         fs::create_dir_all(path)?;
 
         // rebuild index
-        let gen_list = sorted_gen_list(path)?;
+        let mut gen_list = sorted_gen_list(path)?;
         let mut uncompacted = 0;
         let index = Arc::new(HierarchicalIndex::default());
         for &gen in &gen_list {
@@ -120,19 +124,19 @@ impl KvsEngine for ReadLockFreeKvStore {
             index: index.clone(),
             path: path.clone(),
             readers: RefCell::new(BTreeMap::new()),
+            count: AtomicU64::new(0),
         };
         let current_gen = gen_list.last().unwrap_or(&0) + 1;
         let writer = BufWriterWithPos::new(
             OpenOptions::new()
-                .append(true)
+                .write(true)
                 .create_new(true)
-                .open(log_path(&path, current_gen))?
+                .open(log_path(&path, current_gen))?,
         )?;
         let writer = Arc::new(Mutex::new(SharedWriter {
             path: path.clone(),
-            current_gen: 0,
-            uncompacted: 0,
-            total: 0,
+            current_gen: gen_list.last().cloned().unwrap_or(1),
+            uncompacted,
             writer,
             index: index.clone(),
         }));
@@ -150,7 +154,7 @@ impl KvsEngine for ReadLockFreeKvStore {
     }
 
     fn get(&self, key: String) -> Result<Option<String>> {
-        self.reader.get(key)
+        self.reader.get(&key)
     }
 
     fn remove(&self, key: String) -> Result<()> {
@@ -166,6 +170,8 @@ struct SharedReader {
     path: Arc<PathBuf>,
     // a seq of readers associated with different gen
     readers: RefCell<BTreeMap<u64, BufReaderWithPos<File>>>,
+    // read count
+    count: AtomicU64,
 }
 
 impl Clone for SharedReader {
@@ -174,14 +180,20 @@ impl Clone for SharedReader {
             index: Arc::clone(&self.index),
             path: Arc::clone(&self.path),
             readers: RefCell::new(BTreeMap::new()),
+            count: AtomicU64::new(0),
         }
     }
 }
 
 impl SharedReader {
-    fn get(&self, key: String) -> Result<Option<String>> {
+    fn get(&self, key: &String) -> Result<Option<String>> {
+        if self.count.fetch_add(1, Ordering::SeqCst) % READER_CLEAN_THRESHOLD == 0 {
+            let safe_point = self.index.safe_point();
+            self.readers.borrow_mut().retain(|k, _| *k >= safe_point);
+        }
+
         self.index
-            .get(key)
+            .get(&key)
             .map_or(Ok(None), |pos| -> Result<Option<String>> {
                 if !self.readers.borrow().contains_key(&pos.gen) {
                     let reader = BufReaderWithPos::new(File::open(log_path(&self.path, pos.gen))?)?;
@@ -206,8 +218,6 @@ struct SharedWriter {
     // the number of bytes representing "stale" commands that could be
     // deleted during a compaction
     uncompacted: u64,
-    // the number of bytes has been write total ly
-    total: u64,
     // current writer
     writer: BufWriterWithPos<File>,
     // a index is needed for update index
@@ -224,7 +234,6 @@ impl SharedWriter {
         serde_json::to_writer(&mut self.writer, &cmd)?;
         self.writer.flush()?;
 
-        self.total += self.writer.pos - pos;
         if let Command::Set { key, .. } = cmd {
             if let Some(cmd_pos) = self
                 .index
@@ -232,7 +241,7 @@ impl SharedWriter {
             {
                 self.uncompacted += cmd_pos.len;
             }
-        }        
+        }
 
         if self.uncompacted > COMPACTION_THRESHOLD {
             self.compact()?;
@@ -249,7 +258,6 @@ impl SharedWriter {
         serde_json::to_writer(&mut self.writer, &cmd)?;
         self.writer.flush()?;
 
-        self.total += self.writer.pos - pos;
         if let Command::Remove { key } = cmd {
             if let Some(cmd_pos) = self.index.remove(&key) {
                 self.uncompacted += cmd_pos.len + self.writer.pos - pos;
@@ -273,44 +281,52 @@ impl SharedWriter {
         // 5. merge new index into current index,
 
         fn compact_process(index: Arc<HierarchicalIndex>, gen: u64, path: PathBuf) -> Result<()> {
-            let mut writer = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(log_compact_path(&path, gen))?;
-            let mut readers = BTreeMap::<u64, File>::new();
-            let res = index.snapshot_read(|key, cmd_pos| -> Result<()> {
-                // rewrite it into new log
-                if !readers.contains_key(&cmd_pos.gen) {
-                    readers.insert(cmd_pos.gen, File::open(log_path(&path, cmd_pos.gen))?);
-                }
+            let mut writer = BufWriterWithPos::new(
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(log_path(&path, gen))?,
+            )?;
+            let readers = SkipMap::<u64, File>::new();
 
-                let reader = readers.get_mut(&cmd_pos.gen).unwrap();
-                reader.seek(SeekFrom::Start(cmd_pos.pos))?;
+            index.snapshot_rewrite(
+                |_, cmd_pos| {
+                    // rewrite it into new log
+                    if !readers.contains_key(&cmd_pos.gen) {
+                        readers.insert(cmd_pos.gen, File::open(log_path(&path, cmd_pos.gen))?);
+                    }
 
-                io::copy(&mut reader.take(cmd_pos.len), &mut writer)?;
-                writer.flush()?;
-                Ok(())
-            });
+                    let binding = readers.get(&cmd_pos.gen).unwrap();
+                    let mut reader = binding.value();
+                    reader.seek(SeekFrom::Start(cmd_pos.pos))?;
 
-            // commit if compact success
-            fs::rename(log_compact_path(&path, gen), log_path(&path, gen))?;
-            // remove useless readers
-            
-            // update memory index 
-            fs::remove_file(path); // delete useless file
-            Ok(())
+                    let pos = writer.pos;
+                    io::copy(&mut reader.take(cmd_pos.len), &mut writer)?;
+                    writer.flush()?;
+                    Ok((gen, (pos..writer.pos)).into())
+                },
+                || {
+                    for reader in &readers {
+                        // only log err because delete file cann't recover
+                        let useless_gen = reader.key();
+                        if let Err(e) = fs::remove_file(log_path(&path, *useless_gen)) {
+                            warn!("Remove useless old index file file, {}", e);
+                        }
+                    }
+                    gen
+                },
+            )
         }
 
+        // submit compact task
         let index = self.index.clone();
         let gen = self.current_gen + 1;
         let path = (*self.path).clone();
-        
-        spawn(move || {
-            compact_process(index, gen, path)
-        });
+        spawn(move || compact_process(index, gen, path));
 
         // after spawn compact
-        self.uncompacted -= self.index.snapshot();
+        self.index.snapshot();
+        self.uncompacted = 0;
         self.current_gen += 2;
         self.writer = BufWriterWithPos::new(
             OpenOptions::new()
@@ -333,37 +349,90 @@ struct HierarchicalIndex {
     // snapshot is last level, so it can't be has a delete record
     snapshot: SkipMap<String, CommandPos>,
     active: SkipMap<String, CommandIdx>,
+    safe_point: RwLock<u64>,
 }
 
 impl HierarchicalIndex {
     // return old record if replace a record, return none if not
     fn insert(&self, key: String, value: CommandPos) -> Option<CommandPos> {
-        todo!()
+        let mut old_pos = None;
+        if let Some(old_idx) = self.active.get(&key)
+            && let CommandIdx::Index(old_cmd) = old_idx.value()
+        {
+            old_pos = Some(old_cmd.clone())
+        }
+
+        self.active.insert(key, CommandIdx::Index(value));
+        old_pos
     }
 
     // return pos if remove a record, return none if not
     fn remove(&self, key: &String) -> Option<CommandPos> {
-        todo!()
+        let mut old_pos = None;
+        if let Some(old_idx) = self.active.get(key)
+            && let CommandIdx::Index(old_cmd) = old_idx.value()
+        {
+            old_pos = Some(old_cmd.clone())
+        }
+
+        self.active.insert(key.clone(), CommandIdx::Tombstone);
+        old_pos
     }
 
     // get from low level first
     // it may be resulting in read amplificatio
-    fn get(&self, key: String) -> Option<CommandPos> {
-        todo!()
-    }
-
-    // produce level snapshot, make level_write into level1_snapshot, return reduced bytes
-    fn snapshot(&self) -> u64 {
-        todo!()
-    }
-
-    fn snapshot_read<F>(&self, mut f: F) -> Result<()>
-    where
-        F: FnMut(&String, &CommandPos) -> Result<()>,
-    {
-        for item in (&self.snapshot).into_iter() {
-            f(item.key(), item.value())?;
+    fn get(&self, key: &String) -> Option<CommandPos> {
+        if let Some(idx) = self.active.get(key) 
+            && let CommandIdx::Index(cmd) = idx.value() 
+        {
+            return Some(cmd.clone());
+        } 
+        
+        let _lock = self.safe_point.read().unwrap();
+        if  let Some(idx) = self.snapshot.get(key) {
+            Some(idx.value().clone())
+        } else {
+            None
         }
+    }
+
+    // get the safe_point gen. safe point is the minuium gen in index
+    fn safe_point(&self) -> u64 {
+        *self.safe_point.read().unwrap()
+    }
+
+    /// Merge all records in active into snapshot, it will merge delete records into insert records
+    fn snapshot(&self) {
+        let _lock = self.safe_point.write().unwrap();
+        while let Some(item) = self.active.pop_back() {
+            match item.value() {
+                CommandIdx::Index(cmd_pos) => {
+                    self.snapshot.insert(item.key().clone(), cmd_pos.clone());
+                }
+                CommandIdx::Tombstone => ()
+            }
+        }
+    }
+
+    /// Rewrite all records in snapshot into new files.
+    fn snapshot_rewrite<Write, Commit>(&self, mut write: Write, mut commit: Commit) -> Result<()>
+    where
+        Write: FnMut(&String, &CommandPos) -> Result<CommandPos>,
+        Commit: FnMut() -> u64,
+    {
+        let rewrite_snapshot = SkipMap::new();
+        for item in (&self.snapshot).into_iter() {
+            rewrite_snapshot.insert(item.key().clone(), write(item.key(), item.value())?);
+        }
+
+        let mut lock = self.safe_point.write().unwrap();
+        *lock = commit();
+        self.snapshot.clear();
+        rewrite_snapshot.into_iter().for_each(|(k, v)| {
+            self.snapshot.insert(k, v);
+        });
+        drop(lock);
+
         Ok(())
     }
 }
@@ -645,6 +714,7 @@ impl Command {
 }
 
 /// Represents the position and length of a json-serialized command in the log
+#[derive(Clone)]
 struct CommandPos {
     gen: u64,
     pos: u64,

@@ -4,15 +4,17 @@ use std::{
     env::current_dir,
     fmt::Display,
     fs::{self},
+    net::SocketAddr,
     process::exit,
-    str::FromStr, net::SocketAddr,
+    str::FromStr,
 };
 
 use clap::{Parser, ValueEnum};
 use kvs::{
     common::Ipv4Port,
     error::{ErrorCode, Result},
-    KvServer, KvStore, KvsEngine, SledStore, thread_pool::{SharedQueueThreadPool, ThreadPool},
+    thread_pool::{SharedQueueThreadPool, ThreadPool},
+    KvServer, KvStore, KvsEngine, SledStore,
 };
 use log::warn;
 use tracing::{error, info};

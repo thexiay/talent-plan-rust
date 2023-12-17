@@ -1,10 +1,11 @@
-
 use std::path::Path;
 
 use crate::Result;
 
 pub trait KvsEngine: Clone + Send + 'static {
-    fn open(path: &Path) -> Result<Self> where Self: Sized;
+    fn open(path: &Path) -> Result<Self>
+    where
+        Self: Sized;
 
     fn set(&self, key: String, value: String) -> Result<()>;
 

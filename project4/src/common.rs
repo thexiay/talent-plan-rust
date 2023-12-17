@@ -5,7 +5,7 @@ use std::{
     str::FromStr,
 };
 
-use log::{warn, debug};
+use log::{debug, warn};
 use serde_derive::{Deserialize, Serialize};
 
 use crate::error::ErrorCode;

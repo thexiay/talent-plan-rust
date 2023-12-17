@@ -1,7 +1,7 @@
 use crate::error::ErrorCode;
 
-use super::ThreadPool;
 use super::Result;
+use super::ThreadPool;
 
 pub struct RayonThreadPool(rayon::ThreadPool);
 
